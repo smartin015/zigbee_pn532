@@ -4,11 +4,17 @@
  * Acts as a Zigbee End Device bridging NFC tag text data into a Zigbee
  * network.  Built on the Arduino Zigbee library (Zigbee.h).
  *
+ * Supports hot-plugging the PN532 module: the device boots and joins the
+ * Zigbee network regardless of whether the PN532 is attached, then
+ * periodically polls for it.  A boolean attribute is reported so the
+ * coordinator always knows whether the reader is reachable.
+ *
  * ── Zigbee model ───────────────────────────────────────────────────────
  *   Endpoint 1  →  Cluster 0xFC00  (NFC Bridge, manufacturer-specific)
  *     attr 0x0000  nfc_text           char string   R, reportable
  *     attr 0x0001  nfc_tag_uid        octet string  R, reportable
  *     attr 0x0002  nfc_pending_write  char string   RW
+ *     attr 0x0003  nfc_reader_present bool          R, reportable
  *
  * ── Wiring (I2C) ──────────────────────────────────────────────────────
  *   Xiao ESP32C6  →  PN532
@@ -41,11 +47,12 @@
 #define NFC_ENDPOINT    1
 
 // ── Custom cluster constants ───────────────────────────────────────────
-#define ZB_CLUSTER_NFC       0xFC00
-#define ZB_ATTR_NFC_TEXT     0x0000
-#define ZB_ATTR_NFC_UID      0x0001
-#define ZB_ATTR_NFC_WRITE    0x0002
-#define ZB_TEXT_MAX_LEN      128
+#define ZB_CLUSTER_NFC             0xFC00
+#define ZB_ATTR_NFC_TEXT           0x0000
+#define ZB_ATTR_NFC_UID            0x0001
+#define ZB_ATTR_NFC_WRITE          0x0002
+#define ZB_ATTR_NFC_READER_PRESENT 0x0003
+#define ZB_TEXT_MAX_LEN            128
 
 // ── NDEF constants ─────────────────────────────────────────────────────
 #define NDEF_TEXT_RECORD_TYPE  0x54
@@ -61,6 +68,11 @@ static uint8_t  g_nfc_uid_buf      [8] = {0};                    // len + 7 max 
 static uint8_t  g_nfc_uid_len       = 0;
 static uint8_t  g_pending_write_buf[ZB_TEXT_MAX_LEN + 2] = {0};  // len + data + null
 static bool     g_has_pending_write = false;
+
+// PN532 hot-plug state
+static bool     g_nfc_reader_present = false;
+static uint32_t g_nfc_last_check_ms  = 0;
+#define NFC_PRESENCE_CHECK_INTERVAL_MS  5000
 
 // ── Helpers to convert between C-string and Zigbee string ─────────────
 
@@ -124,6 +136,14 @@ public:
             ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
             g_pending_write_buf);
 
+        // Attr 0x0003: nfc_reader_present (bool, read + reportable)
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
+            ZB_ATTR_NFC_READER_PRESENT,
+            ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+            &g_nfc_reader_present);
+
         esp_zb_cluster_list_add_custom_cluster(
             _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
@@ -164,9 +184,26 @@ public:
     }
 
     bool reportNfcText() {
+        return reportAttr(ZB_ATTR_NFC_TEXT);
+    }
+
+    bool setReaderPresent(bool present) {
+        g_nfc_reader_present = present;
+        esp_zb_zcl_status_t ret = setClusterAttribute(
+            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ATTR_NFC_READER_PRESENT, &g_nfc_reader_present, false);
+        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
+    }
+
+    bool reportReaderPresent() {
+        return reportAttr(ZB_ATTR_NFC_READER_PRESENT);
+    }
+
+private:
+    bool reportAttr(uint16_t attr_id) {
         esp_zb_zcl_report_attr_cmd_t cmd = {};
         cmd.address_mode = ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT;
-        cmd.attributeID  = ZB_ATTR_NFC_TEXT;
+        cmd.attributeID  = attr_id;
         cmd.direction    = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
         cmd.clusterID    = ZB_CLUSTER_NFC;
         cmd.zcl_basic_cmd.src_endpoint = _endpoint;
@@ -326,6 +363,10 @@ static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
 // ==========================================================================
 
 static void console_read() {
+    if (!g_nfc_reader_present) {
+        Serial.println(F("PN532 not present — cannot read."));
+        return;
+    }
     Serial.println(F("Bring a tag close…"));
     uint8_t uid[7], uidLen;
     if (!waitForTag(uid, &uidLen, 5000)) {
@@ -344,6 +385,10 @@ static void console_read() {
 }
 
 static void console_write() {
+    if (!g_nfc_reader_present) {
+        Serial.println(F("PN532 not present — cannot write."));
+        return;
+    }
     Serial.println(F("Enter text (end with newline):"));
     String in;
     uint32_t dl = millis() + 30000;
@@ -374,6 +419,10 @@ static void console_write() {
 }
 
 static void console_scan() {
+    if (!g_nfc_reader_present) {
+        Serial.println(F("PN532 not present — cannot scan."));
+        return;
+    }
     Serial.println(F("Continuous scan — any key to stop."));
     uint8_t lastUID[7] = {0};
     uint8_t lastUIDLen  = 0;
@@ -423,6 +472,8 @@ static void console_status() {
     Serial.println(F("-- Zigbee NFC Bridge Status --"));
     Serial.print(F("  Network: "));
     Serial.println(Zigbee.connected() ? F("joined ✓") : F("not joined x"));
+    Serial.print(F("  PN532 reader: "));
+    Serial.println(g_nfc_reader_present ? F("present ✓") : F("absent x"));
     Serial.print(F("  NFC text:   \""));
     Serial.print((const char *)(g_nfc_text_buf + 1));
     Serial.println('"');
@@ -438,6 +489,43 @@ static void console_status() {
 }
 
 // ==========================================================================
+//  PN532 presence detection (hot-plug)
+// ==========================================================================
+
+// Returns true if the PN532 responds to a firmware-version query.
+// On first successful detection after absence (or at boot) SAMConfig is run.
+static bool checkNfcPresence() {
+    static bool was_present = false;
+
+    bool present = (nfc.getFirmwareVersion() != 0);
+
+    if (present && !was_present) {
+        // Freshly attached — configure SAM
+        nfc.SAMConfig();
+        Serial.println(F("PN532 detected — SAM configured"));
+    } else if (!present && was_present) {
+        Serial.println(F("PN532 lost"));
+    }
+
+    was_present = present;
+    return present;
+}
+
+// Call periodically from loop(); reports changes to the Zigbee attribute.
+static void pollNfcPresence() {
+    if (millis() - g_nfc_last_check_ms < NFC_PRESENCE_CHECK_INTERVAL_MS) return;
+    g_nfc_last_check_ms = millis();
+
+    bool now = checkNfcPresence();
+    if (now != g_nfc_reader_present) {
+        g_nfc_reader_present = now;
+        nfcEp.setReaderPresent(now);
+        nfcEp.reportReaderPresent();
+        Serial.printf("PN532 reader present: %s\n", now ? "yes" : "no");
+    }
+}
+
+// ==========================================================================
 //  Arduino entry points
 // ==========================================================================
 
@@ -449,14 +537,16 @@ void setup() {
     // ── PN532 ──
     nfc.begin();
     uint32_t ver = nfc.getFirmwareVersion();
-    if (!ver) {
-        Serial.println(F("ERROR: PN532 not found. Halting."));
-        Serial.println(F("Check SDA->D4, SCL->D5, 3.3V, GND."));
-        while (1) delay(1000);
+    if (ver) {
+        Serial.printf("PN532: chip=0x%02lX  fw=%lu.%lu\n",
+                      (ver >> 24) & 0xFF, (ver >> 16) & 0xFF, (ver >> 8) & 0xFF);
+        nfc.SAMConfig();
+        g_nfc_reader_present = true;
+    } else {
+        Serial.println(F("PN532 not found at boot — will poll for hot-plug…"));
+        g_nfc_reader_present = false;
     }
-    Serial.printf("PN532: chip=0x%02lX  fw=%lu.%lu\n",
-                  (ver >> 24) & 0xFF, (ver >> 16) & 0xFF, (ver >> 8) & 0xFF);
-    nfc.SAMConfig();
+    g_nfc_last_check_ms = millis();
 
     // ── Zigbee ──
     nfcEp.setManufacturerAndModel("Espressif", "ZigbeeNFCEndpoint");
@@ -476,13 +566,20 @@ void setup() {
     Serial.println();
     Serial.println(F("Connected ✓"));
 
+    // Initial report of reader presence
+    nfcEp.setReaderPresent(g_nfc_reader_present);
+    nfcEp.reportReaderPresent();
+
     Serial.println(F("\nCommands:  r)ead  w)rite  c)ontinuous scan  s)tatus  f)actory-reset"));
     Serial.println(F("Ready.\n"));
 }
 
 void loop() {
+    // ── Poll PN532 presence (hot-plug detection) ──
+    pollNfcPresence();
+
     // ── Pending write from Zigbee coordinator? ──
-    if (g_has_pending_write && g_pending_write_buf[0]) {
+    if (g_nfc_reader_present && g_has_pending_write && g_pending_write_buf[0]) {
         Serial.print(F("Pending write from Zb: \""));
         Serial.print((const char *)(g_pending_write_buf + 1));
         Serial.println(F("\" — bring a tag…"));
