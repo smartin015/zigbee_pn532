@@ -28,8 +28,9 @@
  *   r  read & report tag once
  *   w  prompt for text, write to next tag
  *   c  continuous scan (any key stops)
- *   s  show Zigbee network status
+ *   s  show Zigbee & PN532 status
  *   f  factory‑reset Zigbee & rejoin
+ *   ?  help
  */
 
 #include <Arduino.h>
@@ -44,6 +45,7 @@
 // ── Pin definitions ────────────────────────────────────────────────────
 #define PN532_SDA       D4
 #define PN532_SCL       D5
+#define PN532_I2C_ADDR  0x24   // PN532 default I2C address (7-bit)
 #define NFC_ENDPOINT    1
 
 // ── Custom cluster constants ───────────────────────────────────────────
@@ -468,6 +470,17 @@ static void console_scan() {
     Serial.println(F("\nStopped."));
 }
 
+static void console_help() {
+    Serial.println(F("\nCommands:"));
+    Serial.println(F("  r — read & report tag once"));
+    Serial.println(F("  w — prompt for text, write to next tag"));
+    Serial.println(F("  c — continuous scan (any key stops)"));
+    Serial.println(F("  s — show Zigbee & PN532 status"));
+    Serial.println(F("  f — factory‑reset Zigbee & rejoin"));
+    Serial.println(F("  ? — this help"));
+    Serial.println();
+}
+
 static void console_status() {
     Serial.println(F("-- Zigbee NFC Bridge Status --"));
     Serial.print(F("  Network: "));
@@ -492,12 +505,13 @@ static void console_status() {
 //  PN532 presence detection (hot-plug)
 // ==========================================================================
 
-// Returns true if the PN532 responds to a firmware-version query.
+// Silent I2C bus probe — no error spam when PN532 is absent.
 // On first successful detection after absence (or at boot) SAMConfig is run.
 static bool checkNfcPresence() {
     static bool was_present = false;
 
-    bool present = (nfc.getFirmwareVersion() != 0);
+    Wire.beginTransmission(PN532_I2C_ADDR);
+    bool present = (Wire.endTransmission() == 0);
 
     if (present && !was_present) {
         // Freshly attached — configure SAM
@@ -570,7 +584,7 @@ void setup() {
     nfcEp.setReaderPresent(g_nfc_reader_present);
     nfcEp.reportReaderPresent();
 
-    Serial.println(F("\nCommands:  r)ead  w)rite  c)ontinuous scan  s)tatus  f)actory-reset"));
+    Serial.println(F("\nCommands:  r)ead  w)rite  c)ontinuous scan  s)tatus  f)actory-reset  ?)help"));
     Serial.println(F("Ready.\n"));
 }
 
@@ -612,6 +626,7 @@ void loop() {
             case 'w': while (Serial.available()) Serial.read(); console_write();  break;
             case 'c': while (Serial.available()) Serial.read(); console_scan();   break;
             case 's': while (Serial.available()) Serial.read(); console_status(); break;
+            case '?': while (Serial.available()) Serial.read(); console_help();   break;
             case 'f':
                 while (Serial.available()) Serial.read();
                 Serial.println(F("Factory reset…"));
