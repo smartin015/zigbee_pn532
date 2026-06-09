@@ -73,14 +73,6 @@ static void zbStringWrite(uint8_t *zbuf, const char *src, size_t maxDataLen) {
     zbuf[1 + slen] = '\0';  // null terminator for C convenience
 }
 
-// Read a Zigbee char string buffer into a C string
-static void zbStringRead(const uint8_t *zbuf, char *dst, size_t dstSize) {
-    uint8_t slen = zbuf[0];
-    if (slen >= dstSize) slen = dstSize - 1;
-    memcpy(dst, zbuf + 1, slen);
-    dst[slen] = '\0';
-}
-
 // ==========================================================================
 //  Custom Zigbee endpoint for NFC bridge
 // ==========================================================================
@@ -285,6 +277,7 @@ static void printUID(const uint8_t *uid, uint8_t uidLen) {
 
 static bool readTagData(const uint8_t *uid, uint8_t uidLen,
                         uint8_t page, uint8_t *buf, uint8_t len) {
+    (void)uid; (void)uidLen;
     uint8_t pages = (len + 3) / 4;
     for (uint8_t i = 0; i < pages; i++)
         if (!nfc.ntag2xx_ReadPage(page + i, buf + (i * 4)))
@@ -294,6 +287,7 @@ static bool readTagData(const uint8_t *uid, uint8_t uidLen,
 
 static bool writeTagData(const uint8_t *uid, uint8_t uidLen,
                          uint8_t page, const uint8_t *data, uint8_t len) {
+    (void)uid; (void)uidLen;
     uint8_t pages = (len + 3) / 4;
     for (uint8_t i = 0; i < pages; i++) {
         uint8_t buf[4] = {0};
@@ -321,9 +315,6 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
 
 static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
                            const char *text) {
-    zbStringWrite(g_nfc_text_buf, text, ZB_TEXT_MAX_LEN);
-    g_nfc_uid_buf[0] = uidLen;
-    memcpy(g_nfc_uid_buf + 1, uid, uidLen);
     g_nfc_uid_len = uidLen;
     nfcEp.setNfcText(text);
     nfcEp.setNfcUid(uid, uidLen);
@@ -376,6 +367,7 @@ static void console_write() {
         g_has_pending_write = false;
         g_pending_write_buf[0] = 0;
         g_pending_write_buf[1] = '\0';
+        nfcEp.setPendingWrite("");
     } else {
         Serial.println(F("✗ Write failed."));
     }
@@ -419,6 +411,7 @@ static void console_scan() {
             g_has_pending_write = false;
             g_pending_write_buf[0] = 0;
             g_pending_write_buf[1] = '\0';
+            nfcEp.setPendingWrite("");
         }
         delay(300);
     }
@@ -512,6 +505,7 @@ void loop() {
         g_has_pending_write = false;
         g_pending_write_buf[0] = 0;
         g_pending_write_buf[1] = '\0';
+        nfcEp.setPendingWrite("");
     }
 
     // ── Serial commands ──
