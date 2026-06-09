@@ -52,25 +52,38 @@
 #define NDEF_TNF_WELL_KNOWN    0x01
 #define NDEF_MAX_PAYLOAD       128
 
-// ── Globals ────────────────────────────────────────────────────────────
+// ── Globals (Zigbee string format: first byte = length) ────────────────
 Adafruit_PN532  nfc(PN532_SDA, PN532_SCL);
-static char     g_nfc_text        [ZB_TEXT_MAX_LEN + 1] = "";
-static uint8_t  g_nfc_uid         [7] = {0};
-static uint8_t  g_nfc_uid_len      = 0;
-static char     g_pending_write   [ZB_TEXT_MAX_LEN + 1] = "";
+
+// Zigbee char string: [len_byte][data...][null_terminator]
+static uint8_t  g_nfc_text_buf     [ZB_TEXT_MAX_LEN + 2] = {0};  // len + data + null
+static uint8_t  g_nfc_uid_buf      [8] = {0};                    // len + 7 max UID
+static uint8_t  g_nfc_uid_len       = 0;
+static uint8_t  g_pending_write_buf[ZB_TEXT_MAX_LEN + 2] = {0};  // len + data + null
 static bool     g_has_pending_write = false;
+
+// ── Helpers to convert between C-string and Zigbee string ─────────────
+
+// Write a C string into a Zigbee char string buffer (length-prefixed)
+static void zbStringWrite(uint8_t *zbuf, const char *src, size_t maxDataLen) {
+    size_t slen = strlen(src);
+    if (slen > maxDataLen) slen = maxDataLen;
+    zbuf[0] = (uint8_t)slen;
+    memcpy(zbuf + 1, src, slen);
+    zbuf[1 + slen] = '\0';  // null terminator for C convenience
+}
+
+// Read a Zigbee char string buffer into a C string
+static void zbStringRead(const uint8_t *zbuf, char *dst, size_t dstSize) {
+    uint8_t slen = zbuf[0];
+    if (slen >= dstSize) slen = dstSize - 1;
+    memcpy(dst, zbuf + 1, slen);
+    dst[slen] = '\0';
+}
 
 // ==========================================================================
 //  Custom Zigbee endpoint for NFC bridge
 // ==========================================================================
-
-// Forward declarations for static callbacks
-static esp_zb_zcl_status_t nfc_attr_read(
-    esp_zb_zcl_addr_t *src, uint8_t endpoint,
-    const esp_zb_zcl_attribute_t *attr, void *ctx);
-static esp_zb_zcl_status_t nfc_attr_write(
-    esp_zb_zcl_addr_t *src, uint8_t endpoint,
-    const esp_zb_zcl_attribute_t *attr, void *ctx);
 
 class NfcEndpoint : public ZigbeeEP {
 public:
@@ -91,32 +104,36 @@ public:
             esp_zb_identify_cluster_create(nullptr),
             ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-        // ── Custom NFC cluster ───────────────────────────────────────
-        esp_zb_custom_cluster_cfg_t nfc_cfg = {};
-        nfc_cfg.cluster_id    = ZB_CLUSTER_NFC;
-        nfc_cfg.attr_read_cb  = nfc_attr_read;
-        nfc_cfg.attr_write_cb = nfc_attr_write;
-        esp_zb_custom_cluster_add_cb(_cluster_list, &nfc_cfg);
+        // ── Custom NFC cluster (0xFC00) ──────────────────────────────
+        esp_zb_attribute_list_t *nfc_attr_list =
+            esp_zb_zcl_attr_list_create(ZB_CLUSTER_NFC);
 
-        esp_zb_custom_cluster_add_attr(_cluster_list, ZB_CLUSTER_NFC,
+        // Attr 0x0000: nfc_text (char string, read + reportable)
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
             ZB_ATTR_NFC_TEXT,
             ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
-            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY |
-                ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-            g_nfc_text);
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+            g_nfc_text_buf);
 
-        esp_zb_custom_cluster_add_attr(_cluster_list, ZB_CLUSTER_NFC,
+        // Attr 0x0001: nfc_tag_uid (octet string, read + reportable)
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
             ZB_ATTR_NFC_UID,
             ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING,
-            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY |
-                ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-            g_nfc_uid);
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+            g_nfc_uid_buf);
 
-        esp_zb_custom_cluster_add_attr(_cluster_list, ZB_CLUSTER_NFC,
+        // Attr 0x0002: nfc_pending_write (char string, read+write)
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
             ZB_ATTR_NFC_WRITE,
             ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
             ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-            g_pending_write);
+            g_pending_write_buf);
+
+        esp_zb_cluster_list_add_custom_cluster(
+            _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
         _ep_config = {
             .endpoint         = _endpoint,
@@ -129,26 +146,28 @@ public:
     // ── Public helpers ────────────────────────────────────────────────
 
     bool setNfcText(const char *text) {
+        zbStringWrite(g_nfc_text_buf, text, ZB_TEXT_MAX_LEN);
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_TEXT, (void *)text, false);
+            ZB_ATTR_NFC_TEXT, g_nfc_text_buf, false);
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
     bool setNfcUid(const uint8_t *uid, uint8_t len) {
-        uint8_t buf[8] = {0};
-        buf[0] = len;
-        memcpy(buf + 1, uid, len);
+        if (len > 7) len = 7;
+        g_nfc_uid_buf[0] = len;
+        memcpy(g_nfc_uid_buf + 1, uid, len);
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_UID, buf, false);
+            ZB_ATTR_NFC_UID, g_nfc_uid_buf, false);
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
     bool setPendingWrite(const char *text) {
+        zbStringWrite(g_pending_write_buf, text, ZB_TEXT_MAX_LEN);
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_WRITE, (void *)text, false);
+            ZB_ATTR_NFC_WRITE, g_pending_write_buf, false);
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -159,48 +178,39 @@ public:
         cmd.direction    = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
         cmd.clusterID    = ZB_CLUSTER_NFC;
         cmd.zcl_basic_cmd.src_endpoint = _endpoint;
+        cmd.manuf_specific = 0x00U;
+        cmd.dis_default_resp = 0x00U;
         return reportClusterAttribute(&cmd);
     }
-};
 
-// ── Static callbacks for the custom cluster ─────────────────────────────
+private:
+    // ── Handle ZCL write attribute ───────────────────────────────────
+    void zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t *message) override {
+        if (message->info.cluster == ZB_CLUSTER_NFC) {
+            if (message->attribute.id == ZB_ATTR_NFC_WRITE) {
+                if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING
+                    && message->attribute.data.value != nullptr) {
+                    const uint8_t *src = (const uint8_t *)message->attribute.data.value;
+                    uint8_t srcLen = src[0];
+                    if (srcLen > ZB_TEXT_MAX_LEN) srcLen = ZB_TEXT_MAX_LEN;
+                    memcpy(g_pending_write_buf + 1, src + 1, srcLen);
+                    g_pending_write_buf[0] = srcLen;
+                    g_pending_write_buf[1 + srcLen] = '\0';
+                    g_has_pending_write = (srcLen > 0);
 
-static esp_zb_zcl_status_t nfc_attr_read(
-    esp_zb_zcl_addr_t *src, uint8_t endpoint,
-    const esp_zb_zcl_attribute_t *attr, void *ctx)
-{
-    Serial.printf("Zb attr read req: attr=0x%04X\n", attr->attribute.id);
-    return ESP_ZB_ZCL_STATUS_SUCCESS;
-}
-
-static esp_zb_zcl_status_t nfc_attr_write(
-    esp_zb_zcl_addr_t *src, uint8_t endpoint,
-    const esp_zb_zcl_attribute_t *attr, void *ctx)
-{
-    uint16_t id = attr->attribute.id;
-    Serial.printf("Zb attr write req: attr=0x%04X\n", id);
-
-    if (id == ZB_ATTR_NFC_WRITE) {
-        const uint8_t *data = (const uint8_t *)attr->data.value;
-        size_t len = attr->data.size;
-        if (len > 0) {
-            uint8_t strLen = data[0];
-            if (strLen > ZB_TEXT_MAX_LEN) strLen = ZB_TEXT_MAX_LEN;
-            memcpy(g_pending_write, data + 1, strLen);
-            g_pending_write[strLen] = '\0';
-            g_has_pending_write = (strLen > 0);
+                    Serial.print(F("Zb: queued write text = \""));
+                    Serial.print((const char *)(g_pending_write_buf + 1));
+                    Serial.println('"');
+                }
+            } else {
+                log_w("Zb attr write: unknown attr 0x%04X on cluster 0x%04X",
+                      message->attribute.id, message->info.cluster);
+            }
         } else {
-            g_pending_write[0] = '\0';
-            g_has_pending_write = false;
+            log_w("Zb attr write: unknown cluster 0x%04X", message->info.cluster);
         }
-
-        Serial.print(F("Zb: queued write text = \""));
-        Serial.print(g_pending_write);
-        Serial.println('"');
-        return ESP_ZB_ZCL_STATUS_SUCCESS;
     }
-    return ESP_ZB_ZCL_STATUS_READ_ONLY;
-}
+};
 
 // ── Global endpoint instance ────────────────────────────────────────────
 NfcEndpoint nfcEp(NFC_ENDPOINT);
@@ -311,12 +321,12 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
 
 static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
                            const char *text) {
-    strncpy(g_nfc_text, text, ZB_TEXT_MAX_LEN);
-    g_nfc_text[ZB_TEXT_MAX_LEN] = '\0';
-    memcpy(g_nfc_uid, uid, uidLen);
+    zbStringWrite(g_nfc_text_buf, text, ZB_TEXT_MAX_LEN);
+    g_nfc_uid_buf[0] = uidLen;
+    memcpy(g_nfc_uid_buf + 1, uid, uidLen);
     g_nfc_uid_len = uidLen;
-    nfcEp.setNfcText(g_nfc_text);
-    nfcEp.setNfcUid(g_nfc_uid, g_nfc_uid_len);
+    nfcEp.setNfcText(text);
+    nfcEp.setNfcUid(uid, uidLen);
     nfcEp.reportNfcText();
 }
 
@@ -364,7 +374,8 @@ static void console_write() {
     if (writeTagText(uid, uidLen, in.c_str())) {
         Serial.println(F("✓ Written."));
         g_has_pending_write = false;
-        g_pending_write[0] = '\0';
+        g_pending_write_buf[0] = 0;
+        g_pending_write_buf[1] = '\0';
     } else {
         Serial.println(F("✗ Write failed."));
     }
@@ -397,16 +408,17 @@ static void console_scan() {
             updateNfcState(uid, uidLen, text);
         }
 
-        if (g_has_pending_write && g_pending_write[0]) {
+        if (g_has_pending_write && g_pending_write_buf[0]) {
             Serial.print(F("  -> writing pending: "));
-            Serial.println(g_pending_write);
-            if (writeTagText(uid, uidLen, g_pending_write)) {
+            Serial.println((const char *)(g_pending_write_buf + 1));
+            if (writeTagText(uid, uidLen, (const char *)(g_pending_write_buf + 1))) {
                 Serial.println(F("  ✓ written."));
             } else {
                 Serial.println(F("  x write failed."));
             }
             g_has_pending_write = false;
-            g_pending_write[0]  = '\0';
+            g_pending_write_buf[0] = 0;
+            g_pending_write_buf[1] = '\0';
         }
         delay(300);
     }
@@ -418,14 +430,15 @@ static void console_status() {
     Serial.println(F("-- Zigbee NFC Bridge Status --"));
     Serial.print(F("  Network: "));
     Serial.println(Zigbee.connected() ? F("joined ✓") : F("not joined x"));
-    Serial.print(F("  NFC text:   \"")); Serial.print(g_nfc_text);
+    Serial.print(F("  NFC text:   \""));
+    Serial.print((const char *)(g_nfc_text_buf + 1));
     Serial.println('"');
     Serial.print(F("  NFC UID:    "));
-    if (g_nfc_uid_len) printUID(g_nfc_uid, g_nfc_uid_len);
+    if (g_nfc_uid_len) printUID(g_nfc_uid_buf + 1, g_nfc_uid_len);
     else Serial.println(F("(none)"));
     Serial.print(F("  Pending write: "));
-    if (g_has_pending_write) {
-        Serial.print('"'); Serial.print(g_pending_write); Serial.println('"');
+    if (g_has_pending_write && g_pending_write_buf[0]) {
+        Serial.print('"'); Serial.print((const char *)(g_pending_write_buf + 1)); Serial.println('"');
     } else {
         Serial.println(F("(none)"));
     }
@@ -476,15 +489,15 @@ void setup() {
 
 void loop() {
     // ── Pending write from Zigbee coordinator? ──
-    if (g_has_pending_write && g_pending_write[0]) {
+    if (g_has_pending_write && g_pending_write_buf[0]) {
         Serial.print(F("Pending write from Zb: \""));
-        Serial.print(g_pending_write);
+        Serial.print((const char *)(g_pending_write_buf + 1));
         Serial.println(F("\" — bring a tag…"));
 
         uint8_t uid[7], uidLen;
         if (waitForTag(uid, &uidLen, 30000)) {
             printUID(uid, uidLen);
-            if (writeTagText(uid, uidLen, g_pending_write)) {
+            if (writeTagText(uid, uidLen, (const char *)(g_pending_write_buf + 1))) {
                 Serial.println(F("✓ Written via Zigbee."));
                 char txt[ZB_TEXT_MAX_LEN + 1] = "";
                 if (readTagText(uid, uidLen, txt, sizeof(txt))) {
@@ -497,7 +510,8 @@ void loop() {
             Serial.println(F("Timeout — write cancelled."));
         }
         g_has_pending_write = false;
-        g_pending_write[0]  = '\0';
+        g_pending_write_buf[0] = 0;
+        g_pending_write_buf[1] = '\0';
     }
 
     // ── Serial commands ──
