@@ -341,38 +341,13 @@ static bool writeTagData(const uint8_t *uid, uint8_t uidLen,
 
 static bool readTagText(const uint8_t *uid, uint8_t uidLen,
                         char *out, size_t outSize) {
-    // Read NDEF header first (pages 4-5, 8 bytes) to determine payload size,
-    // then read only the pages we actually need.  Avoids timeouts from
-    // trying to read 36 pages in one burst.
-    uint8_t hdr[8] = {0};
-    if (!readTagData(uid, uidLen, 4, hdr, sizeof(hdr))) {
-        Serial.println(F("DEBUG: header read failed"));
+    // Single read burst — 32 bytes (8 pages) is known to work reliably.
+    // Covers NDEF text records up to ~27 chars.  For longer messages
+    // the caller (console_read / updateNfcState) will truncate.
+    uint8_t raw[32] = {0};
+    if (!readTagData(uid, uidLen, 4, raw, sizeof(raw)))
         return false;
-    }
-
-    uint8_t  flags      = hdr[0];
-    uint8_t  typeLen    = hdr[1];
-    uint32_t payloadLen;
-    uint8_t  headerLen;
-    bool     sr = flags & (1 << 4);
-    if (sr) { payloadLen = hdr[2];  headerLen = 4; }
-    else    { payloadLen = ((uint32_t)hdr[2]<<24)|((uint32_t)hdr[3]<<16)|
-                           ((uint32_t)hdr[4]<<8)|(uint32_t)hdr[5]; headerLen = 7; }
-
-    uint32_t totalLen = headerLen + typeLen + payloadLen;
-    if (totalLen > (uint32_t)(NDEF_MAX_PAYLOAD + 16)) {
-        Serial.println(F("DEBUG: NDEF too large"));
-        return false;
-    }
-
-    // Now read the complete NDEF message
-    uint8_t raw[NDEF_MAX_PAYLOAD + 16] = {0};
-    uint8_t pages = (totalLen + 3) / 4;
-    if (!readTagData(uid, uidLen, 4, raw, pages * 4)) {
-        Serial.println(F("DEBUG: full read failed"));
-        return false;
-    }
-    return parseTextNDEF(raw, totalLen, out, outSize);
+    return parseTextNDEF(raw, sizeof(raw), out, outSize);
 }
 
 static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
