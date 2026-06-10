@@ -14,6 +14,9 @@ const ATTR_TEXT = 0x0000;
 const ATTR_UID = 0x0001;
 const ATTR_WRITE = 0x0002;
 const ATTR_PRESENT = 0x0003;
+const ATTR_AUTH_PWD = 0x0004;
+const ATTR_AUTH_PACK = 0x0005;
+const ATTR_AUTH_ENABLED = 0x0006;
 
 // Helper: decode ZCL char-string (length-prefixed) or octet-string to JS value
 function decodeString(raw) {
@@ -65,6 +68,41 @@ const fzLocal = {
             }
         },
     },
+    nfc_auth_enabled: {
+        cluster: CLUSTER,
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data[ATTR_AUTH_ENABLED] !== undefined) {
+                return {nfc_auth_enabled: !!msg.data[ATTR_AUTH_ENABLED]};
+            }
+        },
+    },
+    nfc_auth_pwd: {
+        cluster: CLUSTER,
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data[ATTR_AUTH_PWD] !== undefined) {
+                const raw = msg.data[ATTR_AUTH_PWD];
+                if (Buffer.isBuffer(raw) && raw.length > 1) {
+                    const len = Math.min(raw[0], raw.length - 1);
+                    return {nfc_auth_pwd: raw.slice(1, 1 + len).toString('hex')};
+                }
+            }
+        },
+    },
+    nfc_auth_pack: {
+        cluster: CLUSTER,
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data[ATTR_AUTH_PACK] !== undefined) {
+                const raw = msg.data[ATTR_AUTH_PACK];
+                if (Buffer.isBuffer(raw) && raw.length > 1) {
+                    const len = Math.min(raw[0], raw.length - 1);
+                    return {nfc_auth_pack: raw.slice(1, 1 + len).toString('hex')};
+                }
+            }
+        },
+    },
 };
 
 // ── toZigbee converters ───────────────────────────────────────────────
@@ -81,6 +119,50 @@ const tzLocal = {
             return {state: {nfc_pending_write: value.slice(0, len)}};
         },
     },
+    nfc_auth_pwd: {
+        key: ['nfc_auth_pwd'],
+        convertSet: async (entity, key, value, meta) => {
+            // value is a hex string of 4 bytes (8 hex chars)
+            const hex = value.replace(/[^0-9a-fA-F]/g, '');
+            if (hex.length !== 8) throw new Error('nfc_auth_pwd must be 8 hex chars (4 bytes)');
+            const bytes = Buffer.from(hex, 'hex');
+            const buf = Buffer.alloc(5);
+            buf[0] = 4;  // length prefix
+            bytes.copy(buf, 1);
+            await entity.write(CLUSTER, {[ATTR_AUTH_PWD]: buf});
+            return {state: {nfc_auth_pwd: hex}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read(CLUSTER, [ATTR_AUTH_PWD]);
+        },
+    },
+    nfc_auth_pack: {
+        key: ['nfc_auth_pack'],
+        convertSet: async (entity, key, value, meta) => {
+            // value is a hex string of 2 bytes (4 hex chars)
+            const hex = value.replace(/[^0-9a-fA-F]/g, '');
+            if (hex.length !== 4) throw new Error('nfc_auth_pack must be 4 hex chars (2 bytes)');
+            const bytes = Buffer.from(hex, 'hex');
+            const buf = Buffer.alloc(3);
+            buf[0] = 2;  // length prefix
+            bytes.copy(buf, 1);
+            await entity.write(CLUSTER, {[ATTR_AUTH_PACK]: buf});
+            return {state: {nfc_auth_pack: hex}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read(CLUSTER, [ATTR_AUTH_PACK]);
+        },
+    },
+    nfc_auth_enabled: {
+        key: ['nfc_auth_enabled'],
+        convertSet: async (entity, key, value, meta) => {
+            await entity.write(CLUSTER, {[ATTR_AUTH_ENABLED]: !!value});
+            return {state: {nfc_auth_enabled: !!value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read(CLUSTER, [ATTR_AUTH_ENABLED]);
+        },
+    },
 };
 
 // ── Definition ────────────────────────────────────────────────────────
@@ -95,8 +177,16 @@ const definition = {
         fzLocal.nfc_tag_uid,
         fzLocal.nfc_pending_write,
         fzLocal.nfc_reader_present,
+        fzLocal.nfc_auth_enabled,
+        fzLocal.nfc_auth_pwd,
+        fzLocal.nfc_auth_pack,
     ],
-    toZigbee: [tzLocal.nfc_pending_write],
+    toZigbee: [
+        tzLocal.nfc_pending_write,
+        tzLocal.nfc_auth_pwd,
+        tzLocal.nfc_auth_pack,
+        tzLocal.nfc_auth_enabled,
+    ],
     exposes: [
         exposes.text('nfc_text', exposes.access.STATE)
             .withDescription('Last-read NFC tag text'),
@@ -106,6 +196,12 @@ const definition = {
             .withDescription('Text queued for write to next presented tag'),
         exposes.binary('nfc_reader_present', exposes.access.STATE, true, false)
             .withDescription('Whether the PN532 module is reachable'),
+        exposes.binary('nfc_auth_enabled', exposes.access.ALL, true, false)
+            .withDescription('Enable NTAG password authentication'),
+        exposes.text('nfc_auth_pwd', exposes.access.ALL)
+            .withDescription('NTAG authentication password (4 bytes, hex)'),
+        exposes.text('nfc_auth_pack', exposes.access.ALL)
+            .withDescription('NTAG password acknowledge (2 bytes, hex)'),
     ],
     meta: {multiEndpoint: false},
     configure: async (device, coordinatorEndpoint, logger) => {
