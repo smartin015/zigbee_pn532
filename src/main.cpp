@@ -340,8 +340,20 @@ static bool writeTagData(const uint8_t *uid, uint8_t uidLen,
 static bool readTagText(const uint8_t *uid, uint8_t uidLen,
                         char *out, size_t outSize) {
     uint8_t raw[NDEF_MAX_PAYLOAD + 16] = {0};
-    if (!readTagData(uid, uidLen, 4, raw, sizeof(raw))) return false;
-    return parseTextNDEF(raw, sizeof(raw), out, outSize);
+    if (!readTagData(uid, uidLen, 4, raw, sizeof(raw))) {
+        Serial.println(F("DEBUG: readTagData failed"));
+        return false;
+    }
+    // Dump first 16 bytes for debugging
+    Serial.print(F("DEBUG raw[0..15]: "));
+    for (int i = 0; i < 16; i++) {
+        if (raw[i] < 0x10) Serial.print('0');
+        Serial.print(raw[i], HEX); Serial.print(' ');
+    }
+    Serial.println();
+    bool ok = parseTextNDEF(raw, sizeof(raw), out, outSize);
+    if (!ok) Serial.println(F("DEBUG: parseTextNDEF failed"));
+    return ok;
 }
 
 static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
