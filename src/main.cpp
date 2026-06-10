@@ -318,9 +318,11 @@ static bool readTagData(const uint8_t *uid, uint8_t uidLen,
                         uint8_t page, uint8_t *buf, uint8_t len) {
     (void)uid; (void)uidLen;
     uint8_t pages = (len + 3) / 4;
-    for (uint8_t i = 0; i < pages; i++)
+    for (uint8_t i = 0; i < pages; i++) {
         if (!nfc.ntag2xx_ReadPage(page + i, buf + (i * 4)))
             return false;
+        delay(2);  // prevent tag-side timeout on long bursts
+    }
     return true;
 }
 
@@ -339,21 +341,38 @@ static bool writeTagData(const uint8_t *uid, uint8_t uidLen,
 
 static bool readTagText(const uint8_t *uid, uint8_t uidLen,
                         char *out, size_t outSize) {
-    uint8_t raw[NDEF_MAX_PAYLOAD + 16] = {0};
-    if (!readTagData(uid, uidLen, 4, raw, sizeof(raw))) {
-        Serial.println(F("DEBUG: readTagData failed"));
+    // Read NDEF header first (pages 4-5, 8 bytes) to determine payload size,
+    // then read only the pages we actually need.  Avoids timeouts from
+    // trying to read 36 pages in one burst.
+    uint8_t hdr[8] = {0};
+    if (!readTagData(uid, uidLen, 4, hdr, sizeof(hdr))) {
+        Serial.println(F("DEBUG: header read failed"));
         return false;
     }
-    // Dump first 16 bytes for debugging
-    Serial.print(F("DEBUG raw[0..15]: "));
-    for (int i = 0; i < 16; i++) {
-        if (raw[i] < 0x10) Serial.print('0');
-        Serial.print(raw[i], HEX); Serial.print(' ');
+
+    uint8_t  flags      = hdr[0];
+    uint8_t  typeLen    = hdr[1];
+    uint32_t payloadLen;
+    uint8_t  headerLen;
+    bool     sr = flags & (1 << 4);
+    if (sr) { payloadLen = hdr[2];  headerLen = 4; }
+    else    { payloadLen = ((uint32_t)hdr[2]<<24)|((uint32_t)hdr[3]<<16)|
+                           ((uint32_t)hdr[4]<<8)|(uint32_t)hdr[5]; headerLen = 7; }
+
+    uint32_t totalLen = headerLen + typeLen + payloadLen;
+    if (totalLen > (uint32_t)(NDEF_MAX_PAYLOAD + 16)) {
+        Serial.println(F("DEBUG: NDEF too large"));
+        return false;
     }
-    Serial.println();
-    bool ok = parseTextNDEF(raw, sizeof(raw), out, outSize);
-    if (!ok) Serial.println(F("DEBUG: parseTextNDEF failed"));
-    return ok;
+
+    // Now read the complete NDEF message
+    uint8_t raw[NDEF_MAX_PAYLOAD + 16] = {0};
+    uint8_t pages = (totalLen + 3) / 4;
+    if (!readTagData(uid, uidLen, 4, raw, pages * 4)) {
+        Serial.println(F("DEBUG: full read failed"));
+        return false;
+    }
+    return parseTextNDEF(raw, totalLen, out, outSize);
 }
 
 static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
