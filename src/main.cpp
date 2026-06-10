@@ -470,6 +470,40 @@ static void console_scan() {
     Serial.println(F("\nStopped."));
 }
 
+// Dump raw tag memory for debugging
+static void console_dump() {
+    if (!g_nfc_reader_present) {
+        Serial.println(F("PN532 not present."));
+        return;
+    }
+    Serial.println(F("Bring a tag…"));
+    uint8_t uid[7], uidLen;
+    if (!waitForTag(uid, &uidLen, 5000)) {
+        Serial.println(F("Timeout.")); return;
+    }
+    printUID(uid, uidLen);
+
+    // Read pages 3-10 (page 3=OTP, pages 4+ = user data)
+    uint8_t raw[8 * 4] = {0};
+    if (!readTagData(uid, uidLen, 3, raw, sizeof(raw))) {
+        Serial.println(F("Read failed.")); return;
+    }
+    for (uint8_t pg = 0; pg < 8; pg++) {
+        Serial.printf("  Pg%02d: ", pg + 3);
+        for (uint8_t b = 0; b < 4; b++) {
+            uint8_t val = raw[pg * 4 + b];
+            if (val < 0x10) Serial.print('0');
+            Serial.print(val, HEX); Serial.print(' ');
+        }
+        Serial.print("  ");
+        for (uint8_t b = 0; b < 4; b++) {
+            uint8_t val = raw[pg * 4 + b];
+            Serial.write(val >= 0x20 && val < 0x7F ? (char)val : '.');
+        }
+        Serial.println();
+    }
+}
+
 static void console_help() {
     Serial.println(F("\nCommands:"));
     Serial.println(F("  r — read & report tag once"));
@@ -477,6 +511,7 @@ static void console_help() {
     Serial.println(F("  c — continuous scan (any key stops)"));
     Serial.println(F("  s — show Zigbee & PN532 status"));
     Serial.println(F("  f — factory‑reset Zigbee & rejoin"));
+    Serial.println(F("  d — raw tag memory dump (debug)"));
     Serial.println(F("  ? — this help"));
     Serial.println();
 }
@@ -627,6 +662,7 @@ void loop() {
             case 'c': while (Serial.available()) Serial.read(); console_scan();   break;
             case 's': while (Serial.available()) Serial.read(); console_status(); break;
             case '?': while (Serial.available()) Serial.read(); console_help();   break;
+            case 'd': while (Serial.available()) Serial.read(); console_dump();   break;
             case 'f':
                 while (Serial.available()) Serial.read();
                 Serial.println(F("Factory reset…"));
