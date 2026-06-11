@@ -1127,7 +1127,8 @@ void setup() {
     digitalWrite(WIFI_ANT_CONFIG, HIGH);
 
     Serial.begin(115200);
-    while (!Serial) delay(10);
+    // Give the USB CDC port 2 s to connect; don't block headless boots.
+    for (uint32_t wait = millis(); millis() - wait < 2000 && !Serial;) delay(10);
     Serial.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
 
     // ── Buzzer ──
