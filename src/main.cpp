@@ -203,6 +203,8 @@ public:
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ZB_ATTR_NFC_TEXT, g_nfc_text_buf, false);
+        Serial.printf("Zb set attr 0x0000 (text) -> %s (val=\"%s\")\n",
+                      ret == ESP_ZB_ZCL_STATUS_SUCCESS ? "OK" : "FAIL", text);
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -213,6 +215,8 @@ public:
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ZB_ATTR_NFC_UID, g_nfc_uid_buf, false);
+        Serial.printf("Zb set attr 0x0001 (uid) len=%d -> %s\n",
+                      len, ret == ESP_ZB_ZCL_STATUS_SUCCESS ? "OK" : "FAIL");
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -284,7 +288,10 @@ private:
         cmd.zcl_basic_cmd.src_endpoint = _endpoint;
         cmd.manuf_specific = 0x00U;
         cmd.dis_default_resp = 0x00U;
-        return reportClusterAttribute(&cmd);
+        bool ok = reportClusterAttribute(&cmd);
+        Serial.printf("Zb report attr 0x%04X on cluster 0x%04X -> %s\n",
+                      attr_id, ZB_CLUSTER_NFC, ok ? "OK" : "FAIL");
+        return ok;
     }
 
 private:
@@ -574,6 +581,7 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
 static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
                            const char *text) {
     g_nfc_uid_len = uidLen;
+    Serial.println(F("Zb: updateNfcState — setting + reporting text + UID"));
     nfcEp.setNfcText(text);
     nfcEp.setNfcUid(uid, uidLen);
     nfcEp.reportNfcText();

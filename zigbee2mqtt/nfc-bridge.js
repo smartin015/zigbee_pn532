@@ -70,10 +70,13 @@ const fzLocal = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_TEXT];
+            meta.logger.debug(`NFC: nfc_text converter — type=${msg.type}, val=${JSON.stringify(val)}, keys=${JSON.stringify(Object.keys(msg.data))}`);
             if (val !== undefined) {
                 const text = decodeString(val);
+                meta.logger.debug(`NFC: decoded nfc_text="${text}"`);
                 return {nfc_text: text};
             }
+            meta.logger.debug(`NFC: ATTR_TEXT (0x0000) not in msg.data`);
         },
     },
     nfc_tag_uid: {
@@ -81,9 +84,13 @@ const fzLocal = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_UID];
+            meta.logger.debug(`NFC: nfc_tag_uid converter — type=${msg.type}, val=${JSON.stringify(val)}`);
             if (val !== undefined) {
-                return {nfc_tag_uid: decodeOctetHex(val)};
+                const hex = decodeOctetHex(val);
+                meta.logger.debug(`NFC: decoded nfc_tag_uid="${hex}"`);
+                return {nfc_tag_uid: hex};
             }
+            meta.logger.debug(`NFC: ATTR_UID (0x0001) not in msg.data`);
         },
     },
     nfc_pending_write: {
@@ -249,31 +256,37 @@ const definition = {
     ],
     meta: {multiEndpoint: false},
     configure: async (device, coordinatorEndpoint, logger) => {
-        try {
-            const endpoint = device.getEndpoint(1);
+        const endpoint = device.getEndpoint(1);
 
-            // Bind the custom cluster so the device knows where to send reports
+        // Step 1: Bind (essential — without this, reports never reach the coordinator)
+        try {
             await reporting.bind(endpoint, coordinatorEndpoint, [CLUSTER]);
             logger.info('NFC Bridge: bound cluster 0xFC00');
+        } catch (e) {
+            logger.warn('NFC Bridge: bind failed — ' + e.message);
+        }
 
-            // Configure reporting intervals so the device may send unsolicited
-            // reports. For string/octet types, reportableChange is ignored;
-            // min=0/max=3600 tells the stack to allow one-shot reports.
+        // Step 2: Configure reporting (best-effort; custom clusters may not support it)
+        try {
             await endpoint.configureReporting(CLUSTER, [
                 {attribute: ATTR_TEXT,    minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
                 {attribute: ATTR_UID,     minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
                 {attribute: ATTR_PRESENT, minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 1},
             ]);
             logger.info('NFC Bridge: reporting configured for cluster 0xFC00');
+        } catch (e) {
+            logger.debug('NFC Bridge: configureReporting skipped — ' + e.message);
+        }
 
-            // Read current attribute values so state is populated at startup
+        // Step 3: Read initial attribute values
+        try {
             await endpoint.read(CLUSTER, [
                 ATTR_TEXT, ATTR_UID, ATTR_PRESENT,
                 ATTR_AUTH_ENABLED, ATTR_AUTH_PWD, ATTR_AUTH_PACK,
             ]);
-            logger.info('NFC Bridge: read initial values');
+            logger.info('NFC Bridge: read initial values sent');
         } catch (e) {
-            logger.warn('NFC Bridge: configure failed — ' + e.message);
+            logger.warn('NFC Bridge: read failed — ' + e.message);
         }
     },
 };
