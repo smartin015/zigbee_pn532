@@ -291,6 +291,11 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
+                    // ESP Zigbee SDK prepends the ZCL type byte before the
+                    // string value for custom attributes.  Detect & skip it.
+                    if (src[0] == (uint8_t)message->attribute.data.type) {
+                        src++;
+                    }
                     uint8_t srcLen = src[0];
                     if (srcLen > ZB_TEXT_MAX_LEN) srcLen = ZB_TEXT_MAX_LEN;
                     memcpy(g_pending_write_buf + 1, src + 1, srcLen);
@@ -306,6 +311,11 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
+                    // ESP Zigbee SDK prepends the ZCL type byte (0x41) before the
+                    // octet string value for custom attributes.  Detect & skip it.
+                    if (src[0] == (uint8_t)message->attribute.data.type) {
+                        src++;
+                    }
                     uint8_t srcLen = src[0];
                     if (srcLen >= 4) {
                         g_auth_pwd_buf[0] = 4;
@@ -322,6 +332,9 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
+                    if (src[0] == (uint8_t)message->attribute.data.type) {
+                        src++;
+                    }
                     uint8_t srcLen = src[0];
                     if (srcLen >= 2) {
                         g_auth_pack_buf[0] = 2;
