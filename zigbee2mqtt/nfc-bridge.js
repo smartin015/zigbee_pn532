@@ -119,15 +119,14 @@ const tzLocal = {
     nfc_pending_write: {
         key: ['nfc_pending_write'],
         convertSet: async (entity, key, value, meta) => {
-            // zigbee-herdsman does NOT add the ZCL length prefix for CHAR_STRING
-            // (unlike OCTET_STRING), so we must include it ourselves.
+            // Don't specify a ZCL type for CHAR_STRING — herdsman would
+            // double-encode.  Instead, send the raw ZCL char-string format
+            // ([length][data]) without a type hint.
             const text = value.slice(0, 128);
             const buf = Buffer.alloc(1 + text.length);
             buf[0] = text.length;
             if (text.length > 0) buf.write(text, 1, 'utf8');
-            await entity.write(CLUSTER, {
-                [ATTR_WRITE]: {value: buf, type: ZCL_CHAR_STRING},
-            }, WRITE_OPTS);
+            await entity.write(CLUSTER, {[ATTR_WRITE]: buf}, WRITE_OPTS);
             return {state: {nfc_pending_write: text}};
         },
     },
