@@ -1203,6 +1203,14 @@ void setup() {
         g_out.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
     }
+
+    // Disable Zigbee radio sleep — this is a mains-powered device.
+    // When USB serial is disconnected, the Zigbee scheduler sees >20ms of idle
+    // (the default sleep threshold) and puts the radio to sleep.  Reports then
+    // wait until the next long-poll wakeup (~1-2s).  Disabling sleep keeps the
+    // radio always on, making reports near-instantaneous regardless of USB state.
+    esp_zb_sleep_enable(false);
+
     beep(30);
 
     g_out.println(F("Zigbee started, connecting to network…"));
