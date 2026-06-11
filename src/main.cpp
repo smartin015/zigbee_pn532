@@ -21,6 +21,7 @@
  *     attr 0x0007  nfc_last_read_ts   uint32        R, reportable
  *     attr 0x0008  nfc_last_write_ts  char string   R, reportable
  *     attr 0x0009  nfc_last_seen_ts   char string   R, reportable
+ *     attr 0x000A  nfc_buzzer_trigger bool          RW
  *
  * ── Wiring (I2C) ──────────────────────────────────────────────────────
  *   Xiao ESP32C6  →  PN532
@@ -52,6 +53,7 @@
 // ── Pin definitions ────────────────────────────────────────────────────
 #define PN532_SDA       D4
 #define PN532_SCL       D5
+#define BUZZER_PIN      D6    // piezo buzzer (passive or active)
 #define PN532_I2C_ADDR  0x24   // PN532 default I2C address (7-bit)
 #define NFC_ENDPOINT    1
 
@@ -67,6 +69,7 @@
 #define ZB_ATTR_NFC_LAST_READ_TS   0x0007
 #define ZB_ATTR_NFC_LAST_WRITE_TS  0x0008
 #define ZB_ATTR_NFC_LAST_SEEN_TS   0x0009
+#define ZB_ATTR_NFC_BUZZER_TRIGGER 0x000A
 #define ZB_TEXT_MAX_LEN            128
 
 // ── NDEF constants ─────────────────────────────────────────────────────
@@ -99,6 +102,9 @@ static uint8_t  g_last_read_ts_buf [ZB_TS_STR_LEN + 2] = {0};  // len + text + n
 static uint8_t  g_last_write_ts_buf[ZB_TS_STR_LEN + 2] = {0};
 static uint8_t  g_last_seen_ts_buf [ZB_TS_STR_LEN + 2] = {0};
 
+// Buzzer trigger — set true by Z2M, cleared after beep
+static bool     g_buzzer_trigger = false;
+
 // Time sync — offset between Zigbee UTC and local millis()
 static time_t   g_time_sync_utc     = 0;    // Unix UTC seconds at last sync
 static uint32_t g_time_sync_millis  = 0;    // local millis() at last sync
@@ -114,6 +120,12 @@ static uint32_t g_nfc_last_check_ms  = 0;
 #define NFC_PRESENCE_CHECK_INTERVAL_MS  5000
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+// Short piezo beep.  Uses tone() for passive buzzers; also works with
+// active buzzers (just drives a square wave).
+static void beep(unsigned int durationMs = 100, unsigned int freq = 2400) {
+    tone(BUZZER_PIN, freq, durationMs);
+}
 
 // Compute current UTC time from last sync + elapsed millis.
 // Returns 0 if time has never been synced.
@@ -239,6 +251,15 @@ public:
             ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
             ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
             g_last_seen_ts_buf);
+
+        // Attr 0x000A: nfc_buzzer_trigger (bool, RW)
+        // Write true to sound the buzzer; firmware clears after beep.
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
+            ZB_ATTR_NFC_BUZZER_TRIGGER,
+            ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
+            &g_buzzer_trigger);
 
         esp_zb_cluster_list_add_custom_cluster(
             _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -494,6 +515,16 @@ private:
                     g_auth_enabled = *(const bool *)message->attribute.data.value;
                     Serial.printf("Zb: auth %s\n", g_auth_enabled ? "ENABLED" : "DISABLED");
                 }
+            } else if (message->attribute.id == ZB_ATTR_NFC_BUZZER_TRIGGER) {
+                if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL
+                    && message->attribute.data.value != nullptr) {
+                    bool trig = *(const bool *)message->attribute.data.value;
+                    if (trig) {
+                        Serial.println(F("Zb: buzzer triggered"));
+                        beep(150);
+                        g_buzzer_trigger = false;
+                    }
+                }
             } else {
                 log_w("Zb attr write: unknown attr 0x%04X on cluster 0x%04X",
                       message->attribute.id, message->info.cluster);
@@ -736,11 +767,13 @@ static void console_read() {
     printUID(uid, uidLen);
     nfcEp.setLastSeenTs(getCurrentUtc());
     nfcEp.reportLastSeenTs();
+    beep(80);   // presence
 
     char text[ZB_TEXT_MAX_LEN + 1] = "";
     if (readTagText(uid, uidLen, text, sizeof(text))) {
         Serial.print(F("Text: ")); Serial.println(text);
         updateNfcState(uid, uidLen, text);
+        beep(80);   // read success
     } else {
         Serial.println(F("No NDEF text record."));
     }
@@ -971,6 +1004,11 @@ void setup() {
     while (!Serial) delay(10);
     Serial.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
 
+    // ── Buzzer ──
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    beep(30);  // short power-on chirp
+
     // ── PN532 ──
     nfc.begin();
     uint32_t ver = nfc.getFirmwareVersion();
@@ -1067,6 +1105,7 @@ void loop() {
                 // Stamp tag presence regardless of NDEF outcome
                 nfcEp.setLastSeenTs(getCurrentUtc());
                 nfcEp.reportLastSeenTs();
+                beep(80);   // tag presence beep
 
                 // Priority: pending write from Zigbee coordinator?
                 if (g_has_pending_write && g_pending_write_buf[0]) {
@@ -1092,6 +1131,7 @@ void loop() {
                     if (readTagText(uid, uidLen, text, sizeof(text))) {
                         Serial.print(F("  ")); Serial.println(text);
                         updateNfcState(uid, uidLen, text);
+                        beep(80);   // successful text read beep
                     } else {
                         Serial.println(F("  (no NDEF text record — ignored)"));
                     }

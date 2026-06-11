@@ -24,6 +24,7 @@ const ATTR_AUTH_ENABLED = 0x0006;
 const ATTR_LAST_READ_TS = 0x0007;
 const ATTR_LAST_WRITE_TS = 0x0008;
 const ATTR_LAST_SEEN_TS = 0x0009;
+const ATTR_BUZZER_TRIGGER = 0x000A;
 
 // ZCL data types used by the firmware (must match ESP_ZB_ZCL_ATTR_TYPE_*)
 const ZCL_OCTET_STRING = 0x41;
@@ -180,6 +181,16 @@ const fzLocal = {
             }
         },
     },
+    nfc_buzzer_trigger: {
+        cluster: CLUSTER_STR,
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const val = msg.data[ATTR_BUZZER_TRIGGER];
+            if (val !== undefined) {
+                return {nfc_buzzer_trigger: !!val};
+            }
+        },
+    },
 };
 
 // ── toZigbee converters ───────────────────────────────────────────────
@@ -251,6 +262,19 @@ const tzLocal = {
             await entity.read(CLUSTER_NUM, [ATTR_AUTH_ENABLED]);
         },
     },
+    nfc_buzzer_trigger: {
+        key: ['nfc_buzzer_trigger'],
+        convertSet: async (entity, key, value, meta) => {
+            // Write true to trigger the buzzer; firmware auto-clears.
+            await entity.write(CLUSTER_NUM, {
+                [ATTR_BUZZER_TRIGGER]: {value: true, type: ZCL_BOOLEAN},
+            }, WRITE_OPTS);
+            return {state: {nfc_buzzer_trigger: false}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read(CLUSTER_NUM, [ATTR_BUZZER_TRIGGER]);
+        },
+    },
 };
 
 // ── Definition ────────────────────────────────────────────────────────
@@ -271,12 +295,14 @@ const definition = {
         fzLocal.nfc_last_read_ts,
         fzLocal.nfc_last_write_ts,
         fzLocal.nfc_last_seen_ts,
+        fzLocal.nfc_buzzer_trigger,
     ],
     toZigbee: [
         tzLocal.nfc_pending_write,
         tzLocal.nfc_auth_pwd,
         tzLocal.nfc_auth_pack,
         tzLocal.nfc_auth_enabled,
+        tzLocal.nfc_buzzer_trigger,
     ],
     exposes: [
         exposes.text('nfc_text', exposes.access.STATE)
@@ -299,6 +325,8 @@ const definition = {
             .withDescription('ISO 8601 timestamp of the last successful tag write'),
         exposes.text('nfc_last_seen_ts', exposes.access.STATE)
             .withDescription('ISO 8601 timestamp of the last tag detection (any tag, even without NDEF)'),
+        exposes.binary('nfc_buzzer_trigger', exposes.access.ALL, true, false)
+            .withDescription('Write true to sound the buzzer remotely'),
     ],
     meta: {multiEndpoint: false},
     configure: async (device, coordinatorEndpoint, logger) => {
@@ -333,6 +361,7 @@ const definition = {
                 ATTR_TEXT, ATTR_UID, ATTR_PRESENT,
                 ATTR_AUTH_ENABLED, ATTR_AUTH_PWD, ATTR_AUTH_PACK,
                 ATTR_LAST_READ_TS, ATTR_LAST_WRITE_TS, ATTR_LAST_SEEN_TS,
+                ATTR_BUZZER_TRIGGER,
             ]);
             logger.info('NFC Bridge: read initial values sent');
         } catch (e) {
