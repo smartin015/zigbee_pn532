@@ -228,6 +228,10 @@ public:
         return reportAttr(ZB_ATTR_NFC_TEXT);
     }
 
+    bool reportNfcUid() {
+        return reportAttr(ZB_ATTR_NFC_UID);
+    }
+
     bool setReaderPresent(bool present) {
         g_nfc_reader_present = present;
         esp_zb_zcl_status_t ret = setClusterAttribute(
@@ -581,6 +585,7 @@ static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
     nfcEp.setNfcText(text);
     nfcEp.setNfcUid(uid, uidLen);
     nfcEp.reportNfcText();
+    nfcEp.reportNfcUid();
 }
 
 // ==========================================================================

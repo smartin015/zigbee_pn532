@@ -221,7 +221,12 @@ const definition = {
         try {
             const endpoint = device.getEndpoint(1);
             await reporting.bind(endpoint, coordinatorEndpoint, [CLUSTER]);
-            logger.info('NFC Bridge: bound cluster 0xFC00');
+            // Read current attribute values so state is populated at startup
+            await endpoint.read(CLUSTER, [
+                ATTR_TEXT, ATTR_UID, ATTR_PRESENT,
+                ATTR_AUTH_ENABLED, ATTR_AUTH_PWD, ATTR_AUTH_PACK,
+            ]);
+            logger.info('NFC Bridge: bound cluster 0xFC00 and read initial values');
         } catch (e) {
             logger.warn('NFC Bridge: configure failed — ' + e.message);
         }
