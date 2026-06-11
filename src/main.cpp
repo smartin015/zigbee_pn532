@@ -789,29 +789,41 @@ static bool writeTagData(const uint8_t *uid, uint8_t uidLen,
 
 static bool readTagText(const uint8_t *uid, uint8_t uidLen,
                         char *out, size_t outSize) {
-    // If auth is enabled and we have credentials, authenticate first
+    uint8_t raw[NFC_READ_BUF_SIZE] = {0};
+
+    // Try unauth first — most tags are unprotected.
+    if (readTagData(uid, uidLen, 4, raw, sizeof(raw)))
+        return parseTextNDEF(raw, sizeof(raw), out, outSize);
+
+    // Read failed.  If the tag is protected, try PWD_AUTH and retry.
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Auth failed — tag not trusted"));
             nfcEp.setLastAuthFailTs(getCurrentUtc());
             nfcEp.reportLastAuthFailTs();
-            beep(500, 1200);  // long low beep: auth rejection
+            beep(500, 1200);
             return false;
         }
+        // Auth succeeded — retry the read
+        memset(raw, 0, sizeof(raw));
+        if (readTagData(uid, uidLen, 4, raw, sizeof(raw)))
+            return parseTextNDEF(raw, sizeof(raw), out, outSize);
     }
-    // Read enough pages to cover the largest possible NDEF text record
-    // (ZB_TEXT_MAX_LEN = 128 chars → ~138 bytes on tag).
-    uint8_t raw[NFC_READ_BUF_SIZE] = {0};
-    if (!readTagData(uid, uidLen, 4, raw, sizeof(raw)))
-        return false;
-    return parseTextNDEF(raw, sizeof(raw), out, outSize);
+
+    return false;
 }
 
 static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
                          const char *text) {
-    // If auth is enabled, authenticate first — the tag may already be
-    // protected from a previous write (AUTH0 set).
-    if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
+    uint8_t ndef[NDEF_MAX_PAYLOAD + 16] = {0};
+    size_t nLen = buildTextNDEF(text, ndef, sizeof(ndef));
+    if (!nLen) return false;
+
+    // Try unauth first — most tags are unprotected.
+    bool ok = writeTagData(uid, uidLen, 4, ndef, nLen);
+
+    // If that failed and the tag may be protected, authenticate and retry.
+    if (!ok && g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Auth failed — cannot write to protected tag"));
             nfcEp.setLastAuthFailTs(getCurrentUtc());
@@ -819,21 +831,16 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
             beep(500, 1200);
             return false;
         }
+        ok = writeTagData(uid, uidLen, 4, ndef, nLen);
     }
 
-    uint8_t ndef[NDEF_MAX_PAYLOAD + 16] = {0};
-    size_t nLen = buildTextNDEF(text, ndef, sizeof(ndef));
-    if (!nLen) return false;
-    if (!writeTagData(uid, uidLen, 4, ndef, nLen))
-        return false;
+    if (!ok) return false;
 
-    // If auth is enabled and the tag wasn't already protected,
-    // configure it now with PWD/PACK/AUTH0 so subsequent writes
-    // require authentication.
+    // Write succeeded.  If auth is enabled, ensure the tag is configured
+    // with PWD/PACK/AUTH0 so subsequent writes require authentication.
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagConfigureAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Warning: auth config failed — tag data was written"));
-            // Don't fail the whole write; data is on the tag.
         }
     }
 
