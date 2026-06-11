@@ -116,14 +116,14 @@ const tzLocal = {
     nfc_pending_write: {
         key: ['nfc_pending_write'],
         convertSet: async (entity, key, value, meta) => {
-            const len = Math.min(value.length, 128);
-            const buf = Buffer.alloc(1 + len);
-            buf[0] = len;
-            if (len > 0) buf.write(value.slice(0, len), 1, 'utf8');
+            // Send raw string — zigbee-herdsman adds the ZCL char string length
+            // prefix automatically when type is specified.
+            const text = value.slice(0, 128);
+            const buf = Buffer.from(text, 'utf8');
             await entity.write(CLUSTER, {
                 [ATTR_WRITE]: {value: buf, type: ZCL_CHAR_STRING},
             });
-            return {state: {nfc_pending_write: value.slice(0, len)}};
+            return {state: {nfc_pending_write: text}};
         },
     },
     nfc_auth_pwd: {
@@ -132,12 +132,11 @@ const tzLocal = {
             // value is a hex string of 4 bytes (8 hex chars)
             const hex = value.replace(/[^0-9a-fA-F]/g, '');
             if (hex.length !== 8) throw new Error('nfc_auth_pwd must be 8 hex chars (4 bytes)');
+            // Send raw bytes — zigbee-herdsman adds the ZCL octet string length
+            // prefix automatically when type is specified.
             const bytes = Buffer.from(hex, 'hex');
-            const buf = Buffer.alloc(5);
-            buf[0] = 4;  // length prefix
-            bytes.copy(buf, 1);
             await entity.write(CLUSTER, {
-                [ATTR_AUTH_PWD]: {value: buf, type: ZCL_OCTET_STRING},
+                [ATTR_AUTH_PWD]: {value: bytes, type: ZCL_OCTET_STRING},
             });
             return {state: {nfc_auth_pwd: hex}};
         },
@@ -152,11 +151,8 @@ const tzLocal = {
             const hex = value.replace(/[^0-9a-fA-F]/g, '');
             if (hex.length !== 4) throw new Error('nfc_auth_pack must be 4 hex chars (2 bytes)');
             const bytes = Buffer.from(hex, 'hex');
-            const buf = Buffer.alloc(3);
-            buf[0] = 2;  // length prefix
-            bytes.copy(buf, 1);
             await entity.write(CLUSTER, {
-                [ATTR_AUTH_PACK]: {value: buf, type: ZCL_OCTET_STRING},
+                [ATTR_AUTH_PACK]: {value: bytes, type: ZCL_OCTET_STRING},
             });
             return {state: {nfc_auth_pack: hex}};
         },

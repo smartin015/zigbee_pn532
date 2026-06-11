@@ -295,12 +295,7 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
-                    // ESP Zigbee SDK prepends the ZCL type byte before the
-                    // string value for custom attributes.  Detect & skip it.
-                    if (src[0] == (uint8_t)message->attribute.data.type) {
-                        src++;
-                    }
-                    uint8_t srcLen = src[0];
+                    uint8_t srcLen = src[0];  // ZCL char string: [len][data…]
                     if (srcLen > ZB_TEXT_MAX_LEN) srcLen = ZB_TEXT_MAX_LEN;
                     memcpy(g_pending_write_buf + 1, src + 1, srcLen);
                     g_pending_write_buf[0] = srcLen;
@@ -315,17 +310,7 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
-                    uint16_t dsize = message->attribute.data.size;
-                    uint8_t  dtype = (uint8_t)message->attribute.data.type;
-
-                    Serial.printf("Zb: PWD raw: type=0x%02X size=%u bytes=", dtype, dsize);
-                    for (uint16_t i = 0; i < min((uint16_t)8, dsize); i++) {
-                        if (src[i] < 0x10) Serial.print('0');
-                        Serial.print(src[i], HEX);
-                    }
-                    Serial.println();
-
-                    uint8_t srcLen = src[0];
+                    uint8_t srcLen = src[0];  // ZCL octet string: [len][data…]
                     if (srcLen >= 4) {
                         g_auth_pwd_buf[0] = 4;
                         memcpy(g_auth_pwd_buf + 1, src + 1, 4);
@@ -335,24 +320,12 @@ private:
                             Serial.print(g_auth_pwd_buf[1+i], HEX);
                         }
                         Serial.println();
-                    } else {
-                        Serial.printf("Zb: PWD srcLen=%u < 4, skipping\n", srcLen);
                     }
                 }
             } else if (message->attribute.id == ZB_ATTR_NFC_AUTH_PACK) {
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
-                    uint16_t dsize = message->attribute.data.size;
-                    uint8_t  dtype = (uint8_t)message->attribute.data.type;
-
-                    Serial.printf("Zb: PACK raw: type=0x%02X size=%u bytes=", dtype, dsize);
-                    for (uint16_t i = 0; i < min((uint16_t)8, dsize); i++) {
-                        if (src[i] < 0x10) Serial.print('0');
-                        Serial.print(src[i], HEX);
-                    }
-                    Serial.println();
-
                     uint8_t srcLen = src[0];
                     if (srcLen >= 2) {
                         g_auth_pack_buf[0] = 2;
@@ -363,8 +336,6 @@ private:
                             Serial.print(g_auth_pack_buf[1+i], HEX);
                         }
                         Serial.println();
-                    } else {
-                        Serial.printf("Zb: PACK srcLen=%u < 2, skipping\n", srcLen);
                     }
                 }
             } else if (message->attribute.id == ZB_ATTR_NFC_AUTH_ENABLED) {
