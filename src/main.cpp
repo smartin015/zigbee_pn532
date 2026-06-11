@@ -700,6 +700,7 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Auth failed — tag not trusted"));
+            beep(500, 1200);  // long low beep: auth rejection
             return false;
         }
     }
@@ -839,6 +840,7 @@ static void console_dump() {
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Auth failed — cannot dump protected pages"));
+            beep(500, 1200);  // long low beep: auth rejection
             return;
         }
     }
