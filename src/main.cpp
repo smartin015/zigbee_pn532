@@ -295,6 +295,14 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
+                    // zigbee-herdsman may double-encode: [outer_len][inner_len][data…]
+                    // where outer_len == inner_len + 1.  Detect & unwrap.
+                    if (message->attribute.data.size >= 3
+                        && message->attribute.data.size == (uint16_t)src[0] + 1
+                        && src[0] == src[1] + 1
+                        && src[1] <= ZB_TEXT_MAX_LEN) {
+                        src++;
+                    }
                     uint8_t srcLen = src[0];  // ZCL char string: [len][data…]
                     if (srcLen > ZB_TEXT_MAX_LEN) srcLen = ZB_TEXT_MAX_LEN;
                     memcpy(g_pending_write_buf + 1, src + 1, srcLen);
@@ -310,6 +318,13 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
+                    // Detect & unwrap double-encoding (see CHAR_STRING handler).
+                    if (message->attribute.data.size >= 3
+                        && message->attribute.data.size == (uint16_t)src[0] + 1
+                        && src[0] == src[1] + 1
+                        && src[1] <= ZB_TEXT_MAX_LEN) {
+                        src++;
+                    }
                     uint8_t srcLen = src[0];  // ZCL octet string: [len][data…]
                     if (srcLen >= 4) {
                         g_auth_pwd_buf[0] = 4;
@@ -326,6 +341,12 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
                     && message->attribute.data.value != nullptr) {
                     const uint8_t *src = (const uint8_t *)message->attribute.data.value;
+                    if (message->attribute.data.size >= 3
+                        && message->attribute.data.size == (uint16_t)src[0] + 1
+                        && src[0] == src[1] + 1
+                        && src[1] <= ZB_TEXT_MAX_LEN) {
+                        src++;
+                    }
                     uint8_t srcLen = src[0];
                     if (srcLen >= 2) {
                         g_auth_pack_buf[0] = 2;
