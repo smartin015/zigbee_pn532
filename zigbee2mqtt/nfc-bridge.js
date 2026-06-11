@@ -155,7 +155,7 @@ const fzLocal = {
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_LAST_READ_TS];
             if (val !== undefined) {
-                return {nfc_last_read_ts: val};
+                return {nfc_last_read_ts: decodeString(val)};
             }
         },
     },
@@ -165,7 +165,7 @@ const fzLocal = {
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_LAST_WRITE_TS];
             if (val !== undefined) {
-                return {nfc_last_write_ts: val};
+                return {nfc_last_write_ts: decodeString(val)};
             }
         },
     },
@@ -281,10 +281,10 @@ const definition = {
             .withDescription('NTAG authentication password (4 bytes, hex)'),
         exposes.text('nfc_auth_pack', exposes.access.ALL)
             .withDescription('NTAG password acknowledge (2 bytes, hex)'),
-        exposes.numeric('nfc_last_read_ts', exposes.access.STATE)
-            .withDescription('Timestamp (ms) of the last successful tag read'),
-        exposes.numeric('nfc_last_write_ts', exposes.access.STATE)
-            .withDescription('Timestamp (ms) of the last successful tag write'),
+        exposes.text('nfc_last_read_ts', exposes.access.STATE)
+            .withDescription('ISO 8601 timestamp of the last successful tag read'),
+        exposes.text('nfc_last_write_ts', exposes.access.STATE)
+            .withDescription('ISO 8601 timestamp of the last successful tag write'),
     ],
     meta: {multiEndpoint: false},
     configure: async (device, coordinatorEndpoint, logger) => {

@@ -46,6 +46,7 @@
 #include "Zigbee.h"
 #include <Wire.h>
 #include <Adafruit_PN532.h>
+#include <time.h>
 
 // ── Pin definitions ────────────────────────────────────────────────────
 #define PN532_SDA       D4
@@ -90,9 +91,16 @@ static bool     g_auth_enabled      = false;
 #define NTAG_PAGE_CFG_PWD          133     // page 0x85: PWD[4]
 #define NTAG_PAGE_CFG_PACK         134     // page 0x86: PACK[2], RFUI[2]
 
-// Timestamps for last read/write (millis())
-static uint32_t g_last_read_ts  = 0;
-static uint32_t g_last_write_ts = 0;
+// Timestamps for last read/write — ISO 8601 char strings ("YYYY-MM-DDTHH:MM:SSZ")
+#define ZB_TS_STR_LEN            21    // "YYYY-MM-DDTHH:MM:SSZ" includes null
+static uint8_t  g_last_read_ts_buf [ZB_TS_STR_LEN + 2] = {0};  // len + text + null
+static uint8_t  g_last_write_ts_buf[ZB_TS_STR_LEN + 2] = {0};
+
+// Time sync — offset between Zigbee UTC and local millis()
+static time_t   g_time_sync_utc     = 0;    // Unix UTC seconds at last sync
+static uint32_t g_time_sync_millis  = 0;    // local millis() at last sync
+static uint32_t g_last_time_sync_ms = 0;    // millis() when we last attempted sync
+#define TIME_SYNC_INTERVAL_MS   (60 * 60 * 1000)   // re-sync every hour
 
 // Continuous read mode — always on at boot
 static bool     g_continuous_read = true;
@@ -102,7 +110,15 @@ static bool     g_nfc_reader_present = false;
 static uint32_t g_nfc_last_check_ms  = 0;
 #define NFC_PRESENCE_CHECK_INTERVAL_MS  5000
 
-// ── Helpers to convert between C-string and Zigbee string ─────────────
+// ── Helpers ───────────────────────────────────────────────────────────
+
+// Compute current UTC time from last sync + elapsed millis.
+// Returns 0 if time has never been synced.
+static time_t getCurrentUtc() {
+    if (g_time_sync_utc == 0) return 0;
+    uint32_t elapsed = millis() - g_time_sync_millis;
+    return g_time_sync_utc + (time_t)(elapsed / 1000);
+}
 
 // Write a C string into a Zigbee char string buffer (length-prefixed)
 static void zbStringWrite(uint8_t *zbuf, const char *src, size_t maxDataLen) {
@@ -196,21 +212,21 @@ public:
             ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
             &g_auth_enabled);
 
-        // Attr 0x0007: nfc_last_read_ts (uint32, read + reportable)
+        // Attr 0x0007: nfc_last_read_ts (char string, read + reportable)
         esp_zb_custom_cluster_add_custom_attr(
             nfc_attr_list,
             ZB_ATTR_NFC_LAST_READ_TS,
-            ESP_ZB_ZCL_ATTR_TYPE_U32,
+            ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
             ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-            &g_last_read_ts);
+            g_last_read_ts_buf);
 
-        // Attr 0x0008: nfc_last_write_ts (uint32, read + reportable)
+        // Attr 0x0008: nfc_last_write_ts (char string, read + reportable)
         esp_zb_custom_cluster_add_custom_attr(
             nfc_attr_list,
             ZB_ATTR_NFC_LAST_WRITE_TS,
-            ESP_ZB_ZCL_ATTR_TYPE_U32,
+            ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
             ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-            &g_last_write_ts);
+            g_last_write_ts_buf);
 
         esp_zb_cluster_list_add_custom_cluster(
             _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -275,11 +291,24 @@ public:
         return reportAttr(ZB_ATTR_NFC_READER_PRESENT);
     }
 
-    bool setLastReadTs(uint32_t ts) {
-        g_last_read_ts = ts;
+    // Format a Unix UTC time_t as ISO 8601 into the attribute buffer
+    static void formatISO8601(time_t utc, uint8_t *zbuf) {
+        struct tm *t = gmtime(&utc);
+        if (t && zbuf) {
+            int len = snprintf((char *)(zbuf + 1), ZB_TS_STR_LEN,
+                               "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                               t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+                               t->tm_hour, t->tm_min, t->tm_sec);
+            zbuf[0] = (uint8_t)(len > 0 ? len : 0);
+            zbuf[1 + zbuf[0]] = '\0';
+        }
+    }
+
+    bool setLastReadTs(time_t utc) {
+        formatISO8601(utc, g_last_read_ts_buf);
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_LAST_READ_TS, &g_last_read_ts, false);
+            ZB_ATTR_NFC_LAST_READ_TS, g_last_read_ts_buf, false);
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -287,11 +316,11 @@ public:
         return reportAttr(ZB_ATTR_NFC_LAST_READ_TS);
     }
 
-    bool setLastWriteTs(uint32_t ts) {
-        g_last_write_ts = ts;
+    bool setLastWriteTs(time_t utc) {
+        formatISO8601(utc, g_last_write_ts_buf);
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_LAST_WRITE_TS, &g_last_write_ts, false);
+            ZB_ATTR_NFC_LAST_WRITE_TS, g_last_write_ts_buf, false);
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -346,6 +375,20 @@ private:
     }
 
 private:
+    // ── Capture Zigbee Time cluster updates for ISO 8601 timestamps ──
+    void zbReadTimeCluster(const esp_zb_zcl_attribute_t *attribute) override {
+        if (attribute->id == ESP_ZB_ZCL_ATTR_TIME_TIME_ID
+            && attribute->data.type == ESP_ZB_ZCL_ATTR_TYPE_UTC_TIME
+            && attribute->data.value != nullptr) {
+            uint32_t zb_utc = *(const uint32_t *)attribute->data.value;
+            // Zigbee UTC epoch → Unix epoch (offset = 946684800 seconds)
+            g_time_sync_utc    = (time_t)zb_utc + 946684800ULL;
+            g_time_sync_millis = millis();
+            Serial.printf("Time synced: Unix UTC=%lu\n", (unsigned long)g_time_sync_utc);
+        }
+        ZigbeeEP::zbReadTimeCluster(attribute);  // let base class give the semaphore
+    }
+
     // ── Handle ZCL write attribute ───────────────────────────────────
     void zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t *message) override {
         if (message->info.cluster == ZB_CLUSTER_NFC) {
@@ -632,7 +675,7 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
     }
 
     // Timestamp the write
-    nfcEp.setLastWriteTs(millis());
+    nfcEp.setLastWriteTs(getCurrentUtc());
     nfcEp.reportLastWriteTs();
 
     return true;
@@ -647,7 +690,7 @@ static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
     nfcEp.reportNfcText();
     nfcEp.reportNfcUid();
     // Timestamp the read
-    nfcEp.setLastReadTs(millis());
+    nfcEp.setLastReadTs(getCurrentUtc());
     nfcEp.reportLastReadTs();
 }
 
@@ -909,6 +952,9 @@ void setup() {
     // ── Zigbee ──
     nfcEp.setManufacturerAndModel("Espressif", "ZigbeeNFCEndpoint");
 
+    // Add Time cluster so we can sync UTC from the coordinator
+    nfcEp.addTimeCluster();
+
     Zigbee.addEndpoint(&nfcEp);
 
     Serial.println(F("Starting Zigbee (End Device)…"));
@@ -924,6 +970,25 @@ void setup() {
     Serial.println();
     Serial.println(F("Connected ✓"));
 
+    // ── Sync time from coordinator ──
+    Serial.print(F("Syncing time from coordinator… "));
+    struct tm now = nfcEp.getTime(1, 0x0000);
+    if (now.tm_year > 0) {
+        // getTime() internally calls localtime() which mangles UTC.
+        // But our zbReadTimeCluster override already captured the raw
+        // UTC value.  If that didn't fire, fall back to what we have.
+        if (g_time_sync_utc == 0) {
+            // Use the struct tm returned — but it's in local time, not UTC.
+            // Best-effort: assume system timezone is UTC.
+            g_time_sync_utc    = mktime(&now);
+            g_time_sync_millis = millis();
+        }
+        Serial.printf("OK (Unix UTC=%lu)\n", (unsigned long)g_time_sync_utc);
+    } else {
+        Serial.println(F("failed — timestamps will be empty until next sync"));
+    }
+    g_last_time_sync_ms = millis();
+
     // Initial report of reader presence
     nfcEp.setReaderPresent(g_nfc_reader_present);
     nfcEp.reportReaderPresent();
@@ -934,6 +999,18 @@ void setup() {
 }
 
 void loop() {
+    // ── Periodic time re-sync (hourly) ──
+    if (millis() - g_last_time_sync_ms > TIME_SYNC_INTERVAL_MS) {
+        Serial.print(F("Re-syncing time… "));
+        struct tm now = nfcEp.getTime(1, 0x0000);
+        if (now.tm_year > 0 && g_time_sync_utc == 0) {
+            g_time_sync_utc    = mktime(&now);
+            g_time_sync_millis = millis();
+        }
+        g_last_time_sync_ms = millis();
+        Serial.println(g_time_sync_utc ? F("OK") : F("failed"));
+    }
+
     // ── Poll PN532 presence (hot-plug detection) ──
     pollNfcPresence();
 

@@ -47,8 +47,8 @@ systemctl restart zigbee2mqtt
 | `nfc_auth_enabled` | binary | read/write | Enable NTAG password authentication |
 | `nfc_auth_pwd` | text | read/write | NTAG authentication password (4 bytes, hex) |
 | `nfc_auth_pack` | text | read/write | NTAG password acknowledge (2 bytes, hex) |
-| `nfc_last_read_ts` | numeric | read | Timestamp (ms) of the last successful tag read |
-| `nfc_last_write_ts` | numeric | read | Timestamp (ms) of the last successful tag write |
+| `nfc_last_read_ts` | text | read | ISO 8601 timestamp of the last successful tag read (e.g. "2025-01-15T10:30:45Z") |
+| `nfc_last_write_ts` | text | read | ISO 8601 timestamp of the last successful tag write |
 
 ## Usage
 
