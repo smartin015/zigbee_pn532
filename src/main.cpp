@@ -1203,6 +1203,7 @@ void setup() {
         g_out.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
     }
+
     beep(30);
 
     g_out.println(F("Zigbee started, connecting to network…"));
@@ -1219,6 +1220,19 @@ void setup() {
     }
     g_out.println();
     g_out.println(F("Connected ✓"));
+
+    // Declare the ED as "rx on when idle" — receiver always on (mains-powered).
+    // Without this, the Zigbee stack defaults rx_on_when_idle to false for EDs,
+    // which causes the parent to deliver APS ACKs and ZCL Default Responses via
+    // indirect transmission (poll-based).  Each poll round-trip costs up to one
+    // long-poll interval (1000ms).  A single attribute report then needs two
+    // polls (APS ACK + Default Response) = ~2s total.  USB serial activity masks
+    // this by keeping the ED in fast-poll / turbo-poll mode.
+    //
+    // Calling this makes the parent deliver ACKs/responses directly, eliminating
+    // the polling delay regardless of USB state.
+    esp_zb_set_rx_on_when_idle(true);
+
     beep(30);
 
     g_out.print(F("Syncing time from coordinator… "));
