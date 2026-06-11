@@ -97,9 +97,9 @@ static uint8_t  g_auth_pwd_buf[5]  = {0};    // octet string: len(4) + 4 bytes
 static uint8_t  g_auth_pack_buf[3] = {0};    // octet string: len(2) + 2 bytes
 static bool     g_auth_enabled      = false;
 #define NTAG_CMD_PWD_AUTH          0x1B
-#define NTAG_PAGE_CFG_AUTH0        131     // page 0x83: mirror, mirror_page, AUTH0, ACCESS
-#define NTAG_PAGE_CFG_PWD          133     // page 0x85: PWD[4]
-#define NTAG_PAGE_CFG_PACK         134     // page 0x86: PACK[2], RFUI[2]
+#define NTAG_PAGE_CFG_AUTH0         41     // page 0x29 byte 2 = AUTH0, byte 3 = ACCESS
+#define NTAG_PAGE_CFG_PWD           43     // page 0x2B: PWD[4]
+#define NTAG_PAGE_CFG_PACK          44     // page 0x2C: PACK[2], RFUI[2]
 
 // Timestamps for last read/write — ISO 8601 char strings ("YYYY-MM-DDTHH:MM:SSZ")
 #define ZB_TS_STR_LEN            21    // "YYYY-MM-DDTHH:MM:SSZ" includes null
