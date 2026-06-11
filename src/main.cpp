@@ -801,7 +801,7 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
             Serial.println(F("Auth failed — tag not trusted"));
             nfcEp.setLastAuthFailTs(getCurrentUtc());
             nfcEp.reportLastAuthFailTs();
-            beep(500, 1200);
+            beep(100, 440); 
             return false;
         }
         // Auth succeeded — retry the read
@@ -828,7 +828,7 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
             Serial.println(F("Auth failed — cannot write to protected tag"));
             nfcEp.setLastAuthFailTs(getCurrentUtc());
             nfcEp.reportLastAuthFailTs();
-            beep(500, 1200);
+            beep(100, 440);
             return false;
         }
         ok = writeTagData(uid, uidLen, 4, ndef, nLen);
@@ -1191,6 +1191,8 @@ void setup() {
     // Initial report of reader presence
     nfcEp.setReaderPresent(g_nfc_reader_present);
     nfcEp.reportReaderPresent();
+
+    loadAuthFromNVS();
 
     Serial.println(F("\nContinuous read is ON — tags will be scanned automatically."));
     Serial.println(F("Commands:  r)ead  w)rite  c)toggle-continuous  s)tatus  f)actory-reset  ?)help"));
