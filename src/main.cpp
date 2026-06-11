@@ -1153,6 +1153,10 @@ void setup() {
     beep(30);
 
     nfc.begin();
+    // Prevent I2C bus stalls from blocking the entire device.
+    // Normal PN532 transactions complete in < 5 ms; 50 ms is generous.
+    Wire.setTimeOut(50);
+    Wire.setClock(100000);
     uint32_t ver = nfc.getFirmwareVersion();
     if (ver) {
         g_out.printf("PN532: chip=0x%02lX  fw=%lu.%lu\n",
@@ -1168,6 +1172,8 @@ void setup() {
 
     nfcEp.setManufacturerAndModel("Espressif", "ZigbeeNFCEndpoint");
     nfcEp.addTimeCluster();
+    // Report mains-powered so the Zigbee stack doesn't assume battery.
+    nfcEp.setPowerSource(ZB_POWER_SOURCE_MAINS);
     Zigbee.addEndpoint(&nfcEp);
 
     esp_zb_set_default_long_poll_interval(1000);
