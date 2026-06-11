@@ -219,7 +219,7 @@ const tzLocal = {
 // ── Definition ────────────────────────────────────────────────────────
 
 const definition = {
-    zigbeeModel: ['ZigbeeNFCEndpoint'],
+    zigbeeModel: ['ZigbeeNFCEndpoint', 'ZigbeeNFCBridge'],
     model: 'ZigbeeNFCBridge',
     vendor: 'Espressif',
     description: 'Zigbee NFC Reader/Writer Bridge (PN532)',
