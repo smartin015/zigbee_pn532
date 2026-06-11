@@ -1137,6 +1137,9 @@ void setup() {
     Serial.begin(115200);
     // Give the USB CDC port 2 s to connect; don't block headless boots.
     for (uint32_t wait = millis(); millis() - wait < 2000 && !Serial;) delay(10);
+    // If no USB host attached, make writes non-blocking so the TX buffer
+    // filling up doesn't hang the device.
+    if (!Serial) Serial.setTxTimeoutMs(0);
     Serial.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
 
     // ── Buzzer ──
