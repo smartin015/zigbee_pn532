@@ -80,6 +80,7 @@
 #define NDEF_TEXT_RECORD_TYPE  0x54
 #define NDEF_TNF_WELL_KNOWN    0x01
 #define NDEF_MAX_PAYLOAD       128
+#define NFC_READ_BUF_SIZE      160   // pages 4..43 — covers full ZB_TEXT_MAX_LEN NDEF
 
 // ── Globals (Zigbee string format: first byte = length) ────────────────
 Adafruit_PN532  nfc(PN532_SDA, PN532_SCL);
@@ -798,10 +799,9 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
             return false;
         }
     }
-    // Single read burst — 32 bytes (8 pages) is known to work reliably.
-    // Covers NDEF text records up to ~27 chars.  For longer messages
-    // the caller (console_read / updateNfcState) will truncate.
-    uint8_t raw[32] = {0};
+    // Read enough pages to cover the largest possible NDEF text record
+    // (ZB_TEXT_MAX_LEN = 128 chars → ~138 bytes on tag).
+    uint8_t raw[NFC_READ_BUF_SIZE] = {0};
     if (!readTagData(uid, uidLen, 4, raw, sizeof(raw)))
         return false;
     return parseTextNDEF(raw, sizeof(raw), out, outSize);
@@ -809,14 +809,27 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
 
 static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
                          const char *text) {
+    // If auth is enabled, authenticate first — the tag may already be
+    // protected from a previous write (AUTH0 set).
+    if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
+        if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
+            Serial.println(F("Auth failed — cannot write to protected tag"));
+            nfcEp.setLastAuthFailTs(getCurrentUtc());
+            nfcEp.reportLastAuthFailTs();
+            beep(500, 1200);
+            return false;
+        }
+    }
+
     uint8_t ndef[NDEF_MAX_PAYLOAD + 16] = {0};
     size_t nLen = buildTextNDEF(text, ndef, sizeof(ndef));
     if (!nLen) return false;
     if (!writeTagData(uid, uidLen, 4, ndef, nLen))
         return false;
 
-    // If auth is enabled, configure the tag with PWD/PACK/AUTH0
-    // after writing NDEF data (tag must still be selected).
+    // If auth is enabled and the tag wasn't already protected,
+    // configure it now with PWD/PACK/AUTH0 so subsequent writes
+    // require authentication.
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagConfigureAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Warning: auth config failed — tag data was written"));
@@ -1194,36 +1207,48 @@ void loop() {
 
     // ── Continuous read mode (always on at boot) ──
     if (g_continuous_read && g_nfc_reader_present) {
-        static uint8_t lastUID[7] = {0};
-        static uint8_t lastUIDLen  = 0;
+        // lastGoodUID  = tag we already processed successfully (debounce)
+        // lastAnnUID   = tag we already announced (no repeat beeps/prints)
+        static uint8_t lastGoodUID[7] = {0};
+        static uint8_t lastGoodUIDLen  = 0;
+        static uint8_t lastAnnUID[7]   = {0};
+        static uint8_t lastAnnUIDLen   = 0;
 
         uint8_t uid[7], uidLen;
         if (waitForTag(uid, &uidLen, 200)) {
-            // Debounce: skip if same tag still present
-            if (uidLen != lastUIDLen || memcmp(uid, lastUID, uidLen)) {
-                memcpy(lastUID, uid, uidLen);
-                lastUIDLen = uidLen;
+            bool isNewAnnounce = (uidLen != lastAnnUIDLen
+                                  || memcmp(uid, lastAnnUID, uidLen));
+            bool isNewGood     = (uidLen != lastGoodUIDLen
+                                  || memcmp(uid, lastGoodUID, uidLen));
 
+            // Announce new tag once (print UID, beep, timestamp)
+            if (isNewAnnounce) {
+                memcpy(lastAnnUID, uid, uidLen);
+                lastAnnUIDLen = uidLen;
                 printUID(uid, uidLen);
-
-                // Stamp tag presence regardless of NDEF outcome
                 nfcEp.setLastSeenTs(getCurrentUtc());
                 nfcEp.reportLastSeenTs();
-                beep(80);   // tag presence beep
+                beep(80);
+            }
 
+            // Process if we haven't successfully handled this tag yet
+            if (isNewGood) {
                 // Priority: pending write from Zigbee coordinator?
                 if (g_has_pending_write && g_pending_write_buf[0]) {
                     Serial.print(F("  -> writing pending: "));
                     Serial.println((const char *)(g_pending_write_buf + 1));
                     if (writeTagText(uid, uidLen, (const char *)(g_pending_write_buf + 1))) {
                         Serial.println(F("  ✓ written."));
+                        memcpy(lastGoodUID, uid, uidLen);
+                        lastGoodUIDLen = uidLen;
                         // Read back what we just wrote
                         char txt[ZB_TEXT_MAX_LEN + 1] = "";
                         if (readTagText(uid, uidLen, txt, sizeof(txt))) {
                             updateNfcState(uid, uidLen, txt);
                         }
                     } else {
-                        Serial.println(F("  x write failed."));
+                        Serial.println(F("  x write failed — will retry."));
+                        // Don't set lastGoodUID → retry same tag next loop
                     }
                     g_has_pending_write = false;
                     g_pending_write_buf[0] = 0;
@@ -1235,16 +1260,25 @@ void loop() {
                     if (readTagText(uid, uidLen, text, sizeof(text))) {
                         Serial.print(F("  ")); Serial.println(text);
                         updateNfcState(uid, uidLen, text);
+                        memcpy(lastGoodUID, uid, uidLen);
+                        lastGoodUIDLen = uidLen;
                         beep(80);   // successful text read beep
                     } else {
-                        Serial.println(F("  (no NDEF text record — ignored)"));
+                        // No NDEF text yet — report UID anyway, then retry
+                        Serial.println(F("  (no NDEF text — will retry)"));
+                        nfcEp.setNfcUid(uid, uidLen);
+                        nfcEp.reportNfcUid();
+                        // Don't set lastGoodUID → retry same tag next loop
                     }
                 }
             }
+            // else: same tag already processed successfully → skip
         } else {
-            // No tag in range — reset debounce memory
-            memset(lastUID, 0, 7);
-            lastUIDLen = 0;
+            // No tag in range — reset all debounce memory
+            memset(lastGoodUID, 0, 7);
+            lastGoodUIDLen = 0;
+            memset(lastAnnUID, 0, 7);
+            lastAnnUIDLen = 0;
         }
     }
 
