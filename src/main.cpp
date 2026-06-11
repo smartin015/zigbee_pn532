@@ -1021,6 +1021,7 @@ static void console_help() {
     Serial.println(F("  s — show Zigbee & PN532 status"));
     Serial.println(F("  a — set auth password + pack (8+4 hex chars)"));
     Serial.println(F("  f — factory‑reset Zigbee & rejoin"));
+    Serial.println(F("  x — reboot the MCU"));
     Serial.println(F("  d — raw tag memory dump (debug)"));
     Serial.println(F("  b — beep"));
     Serial.println(F("  ? — this help"));
@@ -1297,6 +1298,12 @@ void loop() {
                 while (Serial.available()) Serial.read();
                 Serial.println(F("Factory reset…"));
                 Zigbee.factoryReset();
+                break;
+            case 'x':
+                while (Serial.available()) Serial.read();
+                Serial.println(F("Rebooting…"));
+                delay(100);
+                ESP.restart();
                 break;
             default:  while (Serial.available()) Serial.read(); break;
         }
