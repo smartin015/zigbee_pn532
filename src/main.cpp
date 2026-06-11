@@ -1,7 +1,7 @@
 /**
  * Zigbee NFC Reader/Writer — Xiao ESP32C6 + PN532
  *
- * Acts as a Zigbee End Device bridging NFC tag text data into a Zigbee
+ * Acts as a Zigbee Router bridging NFC tag text data into a Zigbee
  * network.  Built on the Arduino Zigbee library (Zigbee.h).
  *
  * Supports hot-plugging the PN532 module: the device boots and joins the
@@ -42,8 +42,8 @@
  */
 
 #include <Arduino.h>
-#ifndef ZIGBEE_MODE_ED
-#error "Zigbee end device mode is not selected in Tools->Zigbee mode"
+#ifndef ZIGBEE_MODE_ZR
+#error "Zigbee router mode is not selected in Tools->Zigbee mode"
 #endif
 
 #include "Zigbee.h"
@@ -52,6 +52,14 @@
 #include <Preferences.h>
 #include <time.h>
 #include "esp_timer.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include "zboss_api.h"
+#ifdef __cplusplus
+}
+#endif
 
 // ── Pin definitions ────────────────────────────────────────────────────
 #define PN532_SDA       D4
@@ -514,6 +522,7 @@ public:
 
 private:
     bool reportAttr(uint16_t attr_id) {
+        uint32_t t0 = micros();
         esp_zb_zcl_report_attr_cmd_t cmd = {};
         cmd.address_mode = ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT;
         cmd.attributeID  = attr_id;
@@ -521,10 +530,11 @@ private:
         cmd.clusterID    = ZB_CLUSTER_NFC;
         cmd.zcl_basic_cmd.src_endpoint = _endpoint;
         cmd.manuf_specific = 0x00U;
-        cmd.dis_default_resp = 0x00U;
+        cmd.dis_default_resp = 0x01U;  // disable Default Response — shaves one poll round-trip
         bool ok = reportClusterAttribute(&cmd);
-        g_out.printf("Zb report attr 0x%04X on cluster 0x%04X -> %s\n",
-                      attr_id, ZB_CLUSTER_NFC, ok ? "OK" : "FAIL");
+        uint32_t dt = micros() - t0;
+        g_out.printf("Zb report attr 0x%04X on cluster 0x%04X -> %s (%lu us)\n",
+                      attr_id, ZB_CLUSTER_NFC, ok ? "OK" : "FAIL", (unsigned long)dt);
         return ok;
     }
 
@@ -872,15 +882,41 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
 
 static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
                            const char *text) {
+    uint32_t t_start = micros();
     g_nfc_uid_len = uidLen;
     g_out.println(F("Zb: updateNfcState — setting + reporting text + UID"));
+
+    uint32_t t0 = micros();
     nfcEp.setNfcText(text);
+    g_out.printf("  setNfcText: %lu us\n", (unsigned long)(micros() - t0));
+
+    t0 = micros();
     nfcEp.setNfcUid(uid, uidLen);
+    g_out.printf("  setNfcUid: %lu us\n", (unsigned long)(micros() - t0));
+
+    t0 = micros();
     nfcEp.reportNfcText();
+    g_out.printf("  reportNfcText: %lu us\n", (unsigned long)(micros() - t0));
+
+    t0 = micros();
     nfcEp.reportNfcUid();
+    g_out.printf("  reportNfcUid: %lu us\n", (unsigned long)(micros() - t0));
+
     // Timestamp the read
+    t0 = micros();
     nfcEp.setLastReadTs(getCurrentUtc());
+    g_out.printf("  setLastReadTs: %lu us\n", (unsigned long)(micros() - t0));
+
+    t0 = micros();
     nfcEp.reportLastReadTs();
+    g_out.printf("  reportLastReadTs: %lu us\n", (unsigned long)(micros() - t0));
+
+    // Force turbo poll for the next 3 received packets (APS ACKs).
+    // This collapses poll latency from the long-poll interval (100ms) down
+    // to the turbo-poll interval (100ms) for the responses to these reports.
+    zb_zdo_pim_start_turbo_poll_packets(3);
+
+    g_out.printf("  updateNfcState total: %lu us\n", (unsigned long)(micros() - t_start));
 }
 
 // ==========================================================================
@@ -1196,9 +1232,11 @@ void setup() {
     nfcEp.setPowerSource(ZB_POWER_SOURCE_MAINS);
     Zigbee.addEndpoint(&nfcEp);
 
-    esp_zb_set_default_long_poll_interval(1000);
+    // Keep long poll interval short (mains-powered, no need to conserve battery).
+    // This bounds per-poll latency for APS-ACK / ZCL-response retrieval.
+    esp_zb_set_default_long_poll_interval(100);
 
-    g_out.println(F("Starting Zigbee (End Device)…"));
+    g_out.println(F("Starting Zigbee (Router)…"));
     if (!Zigbee.begin()) {
         g_out.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
@@ -1221,16 +1259,10 @@ void setup() {
     g_out.println();
     g_out.println(F("Connected ✓"));
 
-    // Declare the ED as "rx on when idle" — receiver always on (mains-powered).
-    // Without this, the Zigbee stack defaults rx_on_when_idle to false for EDs,
-    // which causes the parent to deliver APS ACKs and ZCL Default Responses via
-    // indirect transmission (poll-based).  Each poll round-trip costs up to one
-    // long-poll interval (1000ms).  A single attribute report then needs two
-    // polls (APS ACK + Default Response) = ~2s total.  USB serial activity masks
-    // this by keeping the ED in fast-poll / turbo-poll mode.
-    //
-    // Calling this makes the parent deliver ACKs/responses directly, eliminating
-    // the polling delay regardless of USB state.
+    // Routers always have the receiver on when idle (rx_on_when_idle=true),
+    // which means APS ACKs and ZCL Default Responses are delivered directly
+    // without the poll-based indirect transmission used by End Devices.
+    // This call is redundant for routers but kept for clarity.
     esp_zb_set_rx_on_when_idle(true);
 
     beep(30);
