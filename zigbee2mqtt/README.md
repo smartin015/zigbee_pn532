@@ -42,8 +42,13 @@ systemctl restart zigbee2mqtt
 |---|---|---|---|
 | `nfc_text` | text | read | Last-read NFC tag text |
 | `nfc_tag_uid` | text | read | UID of the last-read tag (hex) |
-| `nfc_pending_write` | text | read/write | Text to write to the next presented tag |
+| `nfc_pending_write` | text | read/write | Text to write to the next presented tag (empty string cancels) |
 | `nfc_reader_present` | binary | read | `true` when PN532 module is reachable |
+| `nfc_auth_enabled` | binary | read/write | Enable NTAG password authentication |
+| `nfc_auth_pwd` | text | read/write | NTAG authentication password (4 bytes, hex) |
+| `nfc_auth_pack` | text | read/write | NTAG password acknowledge (2 bytes, hex) |
+| `nfc_last_read_ts` | numeric | read | Timestamp (ms) of the last successful tag read |
+| `nfc_last_write_ts` | numeric | read | Timestamp (ms) of the last successful tag write |
 
 ## Usage
 
