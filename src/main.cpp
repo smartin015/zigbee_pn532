@@ -120,6 +120,10 @@ static uint32_t g_last_time_sync_ms = 0;    // millis() when we last attempted s
 // Continuous read mode — always on at boot
 static bool     g_continuous_read = true;
 
+// True when a USB host has opened the CDC serial port.
+// When false all Serial output is suppressed to avoid blocking.
+static bool     g_serial_attached  = false;
+
 // PN532 hot-plug state
 static bool     g_nfc_reader_present = false;
 static uint32_t g_nfc_last_check_ms  = 0;
@@ -1137,100 +1141,113 @@ void setup() {
     Serial.begin(115200);
     // Give the USB CDC port 2 s to connect; don't block headless boots.
     for (uint32_t wait = millis(); millis() - wait < 2000 && !Serial;) delay(10);
-    // If no USB host attached, make writes non-blocking so the TX buffer
-    // filling up doesn't hang the device.
-    if (!Serial) Serial.setTxTimeoutMs(0);
-    Serial.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
+    g_serial_attached = (bool)Serial;
+    if (!g_serial_attached) Serial.setTxTimeoutMs(0);
+    if (g_serial_attached)
+        Serial.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
 
     // ── Buzzer ──
     pinMode(BUZZER_PIN, OUTPUT);
     pinMode(BUZZER_GND, OUTPUT);
     digitalWrite(BUZZER_GND, LOW);
     digitalWrite(BUZZER_PIN, LOW);
-    beep(30);  // short power-on chirp
+    beep(30);  // ① power-on chirp
 
     // ── PN532 ──
-    // Initialise I2C on the correct pins regardless of whether the
-    // PN532 is attached right now — hot-plug detection needs it.
     nfc.begin();
     uint32_t ver = nfc.getFirmwareVersion();
     if (ver) {
-        Serial.printf("PN532: chip=0x%02lX  fw=%lu.%lu\n",
-                      (ver >> 24) & 0xFF, (ver >> 16) & 0xFF, (ver >> 8) & 0xFF);
+        if (g_serial_attached)
+            Serial.printf("PN532: chip=0x%02lX  fw=%lu.%lu\n",
+                          (ver >> 24) & 0xFF, (ver >> 16) & 0xFF, (ver >> 8) & 0xFF);
         nfc.SAMConfig();
         g_nfc_reader_present = true;
     } else {
-        Serial.println(F("PN532 not found at boot — will poll for hot-plug…"));
+        if (g_serial_attached)
+            Serial.println(F("PN532 not found at boot — will poll for hot-plug…"));
         g_nfc_reader_present = false;
     }
     g_nfc_last_check_ms = millis();
+    beep(30);  // ② PN532 done
 
     // ── Zigbee ──
     nfcEp.setManufacturerAndModel("Espressif", "ZigbeeNFCEndpoint");
-
-    // Add Time cluster so we can sync UTC from the coordinator
     nfcEp.addTimeCluster();
-
     Zigbee.addEndpoint(&nfcEp);
 
-    Serial.println(F("Starting Zigbee (End Device)…"));
+    if (g_serial_attached)
+        Serial.println(F("Starting Zigbee (End Device)…"));
     if (!Zigbee.begin()) {
-        Serial.println(F("Zigbee failed to start! Rebooting…"));
+        if (g_serial_attached)
+            Serial.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
     }
+    beep(30);  // ③ Zigbee.begin OK
 
-    // Join with a 20 s timeout — don't block forever headless.
-    Serial.println(F("Zigbee started, connecting to network…"));
+    if (g_serial_attached)
+        Serial.println(F("Zigbee started, connecting to network…"));
     {
         uint32_t joinStart = millis();
         while (!Zigbee.connected()) {
             if (millis() - joinStart > 20000) {
-                Serial.println(F("\nZigbee join timeout — rebooting…"));
+                if (g_serial_attached)
+                    Serial.println(F("\nZigbee join timeout — rebooting…"));
                 ESP.restart();
             }
-            Serial.print('.');
+            if (g_serial_attached) Serial.print('.');
             delay(250);
         }
     }
-    Serial.println();
-    Serial.println(F("Connected ✓"));
+    if (g_serial_attached) {
+        Serial.println();
+        Serial.println(F("Connected ✓"));
+    }
+    beep(30);  // ④ joined
 
-    // ── Sync time from coordinator ──
-    // zbReadTimeCluster may have already captured UTC during join.
-    // Only issue an explicit read if we don't have a time yet.
-    Serial.print(F("Syncing time from coordinator… "));
+    // ── Time sync ──
+    if (g_serial_attached)
+        Serial.print(F("Syncing time from coordinator… "));
     if (g_time_sync_utc == 0) {
         struct tm now = nfcEp.getTime(1, 0x0000);
         if (now.tm_year > 0) {
             g_time_sync_utc    = mktime(&now);
             g_time_sync_millis = millis();
-            Serial.printf("OK (Unix UTC=%lu)\n", (unsigned long)g_time_sync_utc);
+            if (g_serial_attached)
+                Serial.printf("OK (Unix UTC=%lu)\n", (unsigned long)g_time_sync_utc);
         } else {
-            Serial.println(F("failed — timestamps will be empty until next sync"));
+            if (g_serial_attached)
+                Serial.println(F("failed — timestamps will be empty until next sync"));
         }
     } else {
-        Serial.printf("already synced (Unix UTC=%lu)\n", (unsigned long)g_time_sync_utc);
+        if (g_serial_attached)
+            Serial.printf("already synced (Unix UTC=%lu)\n", (unsigned long)g_time_sync_utc);
     }
     g_last_time_sync_ms = millis();
+    beep(30);  // ⑤ time sync done
 
-    // Initial report of reader presence
+    // ── Reports ──
     nfcEp.setReaderPresent(g_nfc_reader_present);
     nfcEp.reportReaderPresent();
 
     loadAuthFromNVS();
 
-    // Report persisted auth settings to the coordinator
     if (g_auth_enabled) {
         nfcEp.reportAuthPwd();
         nfcEp.reportAuthPack();
     }
     nfcEp.reportAuthEnabled();
 
-    Serial.println(F("\nContinuous read is ON — tags will be scanned automatically."));
-    Serial.println(F("Commands:  r)ead  w)rite  c)toggle-continuous  s)tatus  f)actory-reset  ?)help"));
-    Serial.println(F("Ready.\n"));
+    if (g_serial_attached) {
+        Serial.println(F("\nContinuous read is ON — tags will be scanned automatically."));
+        Serial.println(F("Commands:  r)ead  w)rite  c)toggle-continuous  s)tatus  f)actory-reset  ?)help"));
+        Serial.println(F("Ready.\n"));
+    } else {
+        // No USB host — shut down CDC so Serial output never blocks.
+        Serial.flush();
+        Serial.end();
+    }
 
-    beep(50);  // boot-complete chirp
+    beep(50);  // ⑥ boot complete
 }
 
 void loop() {
