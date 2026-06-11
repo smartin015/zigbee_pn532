@@ -49,6 +49,7 @@
 #include "Zigbee.h"
 #include <Wire.h>
 #include <Adafruit_PN532.h>
+#include <Preferences.h>
 #include <time.h>
 
 // ── Pin definitions ────────────────────────────────────────────────────
@@ -122,6 +123,66 @@ static bool     g_continuous_read = true;
 static bool     g_nfc_reader_present = false;
 static uint32_t g_nfc_last_check_ms  = 0;
 #define NFC_PRESENCE_CHECK_INTERVAL_MS  5000
+
+// ── NVS persistence for auth settings ────────────────────────────────
+#define NVS_AUTH_NS  "nfc_auth"
+
+static void saveAuthToNVS() {
+    Preferences prefs;
+    if (!prefs.begin(NVS_AUTH_NS, false)) {
+        Serial.println(F("NVS: failed to open auth namespace for write"));
+        return;
+    }
+    if (g_auth_pwd_buf[0] == 4)
+        prefs.putBytes("pwd", g_auth_pwd_buf + 1, 4);
+    if (g_auth_pack_buf[0] == 2)
+        prefs.putBytes("pack", g_auth_pack_buf + 1, 2);
+    prefs.putBool("enabled", g_auth_enabled);
+    prefs.end();
+    Serial.println(F("NVS: auth settings saved"));
+}
+
+static void loadAuthFromNVS() {
+    Preferences prefs;
+    if (!prefs.begin(NVS_AUTH_NS, true)) {
+        Serial.println(F("NVS: no saved auth settings"));
+        return;
+    }
+    size_t len;
+    uint8_t buf[4];
+
+    len = prefs.getBytes("pwd", buf, 4);
+    if (len == 4) {
+        g_auth_pwd_buf[0] = 4;
+        memcpy(g_auth_pwd_buf + 1, buf, 4);
+    }
+
+    len = prefs.getBytes("pack", buf, 2);
+    if (len == 2) {
+        g_auth_pack_buf[0] = 2;
+        memcpy(g_auth_pack_buf + 1, buf, 2);
+    }
+
+    g_auth_enabled = prefs.getBool("enabled", false);
+    prefs.end();
+
+    Serial.print(F("NVS: loaded auth — enabled="));
+    Serial.print(g_auth_enabled ? F("YES pwd=") : F("NO  pwd="));
+    if (g_auth_pwd_buf[0] == 4) {
+        for (int i = 0; i < 4; i++) {
+            if (g_auth_pwd_buf[1+i] < 0x10) Serial.print('0');
+            Serial.print(g_auth_pwd_buf[1+i], HEX);
+        }
+    }
+    Serial.print(F(" pack="));
+    if (g_auth_pack_buf[0] == 2) {
+        for (int i = 0; i < 2; i++) {
+            if (g_auth_pack_buf[1+i] < 0x10) Serial.print('0');
+            Serial.print(g_auth_pack_buf[1+i], HEX);
+        }
+    }
+    Serial.println();
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -404,6 +465,7 @@ public:
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ZB_ATTR_NFC_AUTH_PWD, g_auth_pwd_buf, false);
+        saveAuthToNVS();
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -413,6 +475,7 @@ public:
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ZB_ATTR_NFC_AUTH_PACK, g_auth_pack_buf, false);
+        saveAuthToNVS();
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -421,6 +484,7 @@ public:
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ZB_ATTR_NFC_AUTH_ENABLED, &g_auth_enabled, false);
+        saveAuthToNVS();
         return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
     }
 
@@ -504,6 +568,7 @@ private:
                     if (srcLen >= 4) {
                         g_auth_pwd_buf[0] = 4;
                         memcpy(g_auth_pwd_buf + 1, src + 1, 4);
+                        saveAuthToNVS();
                         Serial.print(F("Zb: auth PWD set = "));
                         for (uint8_t i = 0; i < 4; i++) {
                             if (g_auth_pwd_buf[1+i] < 0x10) Serial.print('0');
@@ -526,6 +591,7 @@ private:
                     if (srcLen >= 2) {
                         g_auth_pack_buf[0] = 2;
                         memcpy(g_auth_pack_buf + 1, src + 1, 2);
+                        saveAuthToNVS();
                         Serial.print(F("Zb: auth PACK set = "));
                         for (uint8_t i = 0; i < 2; i++) {
                             if (g_auth_pack_buf[1+i] < 0x10) Serial.print('0');
@@ -538,6 +604,7 @@ private:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL
                     && message->attribute.data.value != nullptr) {
                     g_auth_enabled = *(const bool *)message->attribute.data.value;
+                    saveAuthToNVS();
                     Serial.printf("Zb: auth %s\n", g_auth_enabled ? "ENABLED" : "DISABLED");
                 }
             } else if (message->attribute.id == ZB_ATTR_NFC_BUZZER_TRIGGER) {
