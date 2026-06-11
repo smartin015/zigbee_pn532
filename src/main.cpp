@@ -1204,6 +1204,10 @@ void setup() {
     }
     beep(30);  // ④ joined
 
+    // Speed up End Device polling — default ~7.5 s makes tag reports
+    // take 15-20 s to reach the coordinator.  1 s is safe for mains power.
+    esp_zb_set_default_long_poll_interval(1000);
+
     // ── Time sync ──
     if (g_serial_attached)
         Serial.print(F("Syncing time from coordinator… "));
