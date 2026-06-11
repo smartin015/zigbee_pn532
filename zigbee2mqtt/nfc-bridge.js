@@ -18,6 +18,11 @@ const ATTR_AUTH_PWD = 0x0004;
 const ATTR_AUTH_PACK = 0x0005;
 const ATTR_AUTH_ENABLED = 0x0006;
 
+// ZCL data types used by the firmware (must match ESP_ZB_ZCL_ATTR_TYPE_*)
+const ZCL_OCTET_STRING = 0x41;
+const ZCL_CHAR_STRING  = 0x42;
+const ZCL_BOOLEAN      = 0x10;
+
 // Helper: decode ZCL char-string (length-prefixed) or octet-string to JS value
 function decodeString(raw) {
     if (!Buffer.isBuffer(raw) || raw.length < 1) return '';
@@ -115,7 +120,9 @@ const tzLocal = {
             const buf = Buffer.alloc(1 + len);
             buf[0] = len;
             if (len > 0) buf.write(value.slice(0, len), 1, 'utf8');
-            await entity.write(CLUSTER, {[ATTR_WRITE]: buf}, {writeUndiv: true});
+            await entity.write(CLUSTER, {
+                [ATTR_WRITE]: {value: buf, type: ZCL_CHAR_STRING},
+            });
             return {state: {nfc_pending_write: value.slice(0, len)}};
         },
     },
@@ -129,7 +136,9 @@ const tzLocal = {
             const buf = Buffer.alloc(5);
             buf[0] = 4;  // length prefix
             bytes.copy(buf, 1);
-            await entity.write(CLUSTER, {[ATTR_AUTH_PWD]: buf}, {writeUndiv: true});
+            await entity.write(CLUSTER, {
+                [ATTR_AUTH_PWD]: {value: buf, type: ZCL_OCTET_STRING},
+            });
             return {state: {nfc_auth_pwd: hex}};
         },
         convertGet: async (entity, key, meta) => {
@@ -146,7 +155,9 @@ const tzLocal = {
             const buf = Buffer.alloc(3);
             buf[0] = 2;  // length prefix
             bytes.copy(buf, 1);
-            await entity.write(CLUSTER, {[ATTR_AUTH_PACK]: buf}, {writeUndiv: true});
+            await entity.write(CLUSTER, {
+                [ATTR_AUTH_PACK]: {value: buf, type: ZCL_OCTET_STRING},
+            });
             return {state: {nfc_auth_pack: hex}};
         },
         convertGet: async (entity, key, meta) => {
@@ -156,7 +167,9 @@ const tzLocal = {
     nfc_auth_enabled: {
         key: ['nfc_auth_enabled'],
         convertSet: async (entity, key, value, meta) => {
-            await entity.write(CLUSTER, {[ATTR_AUTH_ENABLED]: !!value}, {writeUndiv: true});
+            await entity.write(CLUSTER, {
+                [ATTR_AUTH_ENABLED]: {value: !!value, type: ZCL_BOOLEAN},
+            });
             return {state: {nfc_auth_enabled: !!value}};
         },
         convertGet: async (entity, key, meta) => {
