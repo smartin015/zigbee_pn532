@@ -23,11 +23,43 @@ const ZCL_OCTET_STRING = 0x41;
 const ZCL_CHAR_STRING  = 0x42;
 const ZCL_BOOLEAN      = 0x10;
 
-// Helper: decode ZCL char-string (length-prefixed) or octet-string to JS value
+// Helper: decode a ZCL string/octet value to JS.
+// zigbee-herdsman may already decode CHAR_STRING → JS string or keep it
+// as a length-prefixed Buffer.  OCTET_STRING is almost always a Buffer.
+// Handle both so reports and read-responses work regardless.
 function decodeString(raw) {
-    if (!Buffer.isBuffer(raw) || raw.length < 1) return '';
-    const len = Math.min(raw[0], raw.length - 1);
-    return raw.slice(1, 1 + len).toString('utf8');
+    if (raw === undefined || raw === null) return '';
+    // Already decoded by herdsman
+    if (typeof raw === 'string') return raw;
+    // Length-prefixed Buffer (ZCL raw)
+    if (Buffer.isBuffer(raw) && raw.length >= 1) {
+        const len = Math.min(raw[0], raw.length - 1);
+        return raw.slice(1, 1 + len).toString('utf8');
+    }
+    return '';
+}
+
+function decodeOctetHex(raw) {
+    if (raw === undefined || raw === null) return '';
+    // Already a hex string (unlikely but handle it)
+    if (typeof raw === 'string') return raw;
+    // Length-prefixed Buffer (ZCL raw)
+    if (Buffer.isBuffer(raw) && raw.length >= 1) {
+        // May or may not have the ZCL length prefix — detect
+        let offset = 0;
+        let len = raw.length;
+        // If raw[0] == raw.length - 1, assume it's length-prefixed
+        if (raw.length >= 2 && raw[0] === raw.length - 1) {
+            offset = 1;
+            len = raw[0];
+        } else if (raw.length > 1 && raw[0] <= raw.length - 1) {
+            // Conservative: treat first byte as length only if it's reasonable
+            offset = 1;
+            len = raw[0];
+        }
+        return raw.slice(offset, offset + len).toString('hex');
+    }
+    return '';
 }
 
 // ── fromZigbee converters ─────────────────────────────────────────────
@@ -37,8 +69,10 @@ const fzLocal = {
         cluster: CLUSTER,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.data[ATTR_TEXT] !== undefined) {
-                return {nfc_text: decodeString(msg.data[ATTR_TEXT])};
+            const val = msg.data[ATTR_TEXT];
+            if (val !== undefined) {
+                const text = decodeString(val);
+                return {nfc_text: text};
             }
         },
     },
@@ -46,12 +80,9 @@ const fzLocal = {
         cluster: CLUSTER,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.data[ATTR_UID] !== undefined) {
-                const raw = msg.data[ATTR_UID];
-                if (Buffer.isBuffer(raw) && raw.length > 1) {
-                    const len = Math.min(raw[0], raw.length - 1);
-                    return {nfc_tag_uid: raw.slice(1, 1 + len).toString('hex')};
-                }
+            const val = msg.data[ATTR_UID];
+            if (val !== undefined) {
+                return {nfc_tag_uid: decodeOctetHex(val)};
             }
         },
     },
@@ -59,8 +90,9 @@ const fzLocal = {
         cluster: CLUSTER,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.data[ATTR_WRITE] !== undefined) {
-                return {nfc_pending_write: decodeString(msg.data[ATTR_WRITE])};
+            const val = msg.data[ATTR_WRITE];
+            if (val !== undefined) {
+                return {nfc_pending_write: decodeString(val)};
             }
         },
     },
@@ -68,8 +100,9 @@ const fzLocal = {
         cluster: CLUSTER,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.data[ATTR_PRESENT] !== undefined) {
-                return {nfc_reader_present: !!msg.data[ATTR_PRESENT]};
+            const val = msg.data[ATTR_PRESENT];
+            if (val !== undefined) {
+                return {nfc_reader_present: !!val};
             }
         },
     },
@@ -77,8 +110,9 @@ const fzLocal = {
         cluster: CLUSTER,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.data[ATTR_AUTH_ENABLED] !== undefined) {
-                return {nfc_auth_enabled: !!msg.data[ATTR_AUTH_ENABLED]};
+            const val = msg.data[ATTR_AUTH_ENABLED];
+            if (val !== undefined) {
+                return {nfc_auth_enabled: !!val};
             }
         },
     },
@@ -86,12 +120,9 @@ const fzLocal = {
         cluster: CLUSTER,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.data[ATTR_AUTH_PWD] !== undefined) {
-                const raw = msg.data[ATTR_AUTH_PWD];
-                if (Buffer.isBuffer(raw) && raw.length > 1) {
-                    const len = Math.min(raw[0], raw.length - 1);
-                    return {nfc_auth_pwd: raw.slice(1, 1 + len).toString('hex')};
-                }
+            const val = msg.data[ATTR_AUTH_PWD];
+            if (val !== undefined) {
+                return {nfc_auth_pwd: decodeOctetHex(val)};
             }
         },
     },
@@ -99,12 +130,9 @@ const fzLocal = {
         cluster: CLUSTER,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.data[ATTR_AUTH_PACK] !== undefined) {
-                const raw = msg.data[ATTR_AUTH_PACK];
-                if (Buffer.isBuffer(raw) && raw.length > 1) {
-                    const len = Math.min(raw[0], raw.length - 1);
-                    return {nfc_auth_pack: raw.slice(1, 1 + len).toString('hex')};
-                }
+            const val = msg.data[ATTR_AUTH_PACK];
+            if (val !== undefined) {
+                return {nfc_auth_pack: decodeOctetHex(val)};
             }
         },
     },
@@ -223,13 +251,27 @@ const definition = {
     configure: async (device, coordinatorEndpoint, logger) => {
         try {
             const endpoint = device.getEndpoint(1);
+
+            // Bind the custom cluster so the device knows where to send reports
             await reporting.bind(endpoint, coordinatorEndpoint, [CLUSTER]);
+            logger.info('NFC Bridge: bound cluster 0xFC00');
+
+            // Configure reporting intervals so the device may send unsolicited
+            // reports. For string/octet types, reportableChange is ignored;
+            // min=0/max=3600 tells the stack to allow one-shot reports.
+            await endpoint.configureReporting(CLUSTER, [
+                {attribute: ATTR_TEXT,    minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
+                {attribute: ATTR_UID,     minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
+                {attribute: ATTR_PRESENT, minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 1},
+            ]);
+            logger.info('NFC Bridge: reporting configured for cluster 0xFC00');
+
             // Read current attribute values so state is populated at startup
             await endpoint.read(CLUSTER, [
                 ATTR_TEXT, ATTR_UID, ATTR_PRESENT,
                 ATTR_AUTH_ENABLED, ATTR_AUTH_PWD, ATTR_AUTH_PACK,
             ]);
-            logger.info('NFC Bridge: bound cluster 0xFC00 and read initial values');
+            logger.info('NFC Bridge: read initial values');
         } catch (e) {
             logger.warn('NFC Bridge: configure failed — ' + e.message);
         }
