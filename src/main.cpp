@@ -784,10 +784,25 @@ static bool readTagData(const uint8_t *uid, uint8_t uidLen,
                         uint8_t page, uint8_t *buf, uint8_t len) {
     (void)uid; (void)uidLen;
     uint8_t pages = (len + 3) / 4;
+    uint32_t start = millis();
     for (uint8_t i = 0; i < pages; i++) {
-        if (!nfc.ntag2xx_ReadPage(page + i, buf + (i * 4)))
+        uint32_t pgStart = millis();
+        if (!nfc.ntag2xx_ReadPage(page + i, buf + (i * 4))) {
+            g_out.printf("  readTagData FAIL at page %d (total elapsed=%lu ms)\n",
+                         page + i, (unsigned long)(millis() - start));
             return false;
+        }
+        uint32_t pgElapsed = millis() - pgStart;
+        if (pgElapsed > 5) {
+            g_out.printf("  SLOW page %d read: %lu ms\n", page + i, (unsigned long)pgElapsed);
+        }
+        uint32_t dlStart = millis();
         delay(2);  // prevent tag-side timeout on long bursts
+        uint32_t dlElapsed = millis() - dlStart;
+        if (dlElapsed > 10) {
+            g_out.printf("  *** STRETCHED delay(2) = %lu ms (tickless idle?)\n",
+                         (unsigned long)dlElapsed);
+        }
     }
     return true;
 }
@@ -810,8 +825,14 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
     uint8_t raw[NFC_READ_BUF_SIZE] = {0};
 
     // Try unauth first — most tags are unprotected.
-    if (readTagData(uid, uidLen, 4, raw, sizeof(raw)))
+    uint32_t rdStart = millis();
+    if (readTagData(uid, uidLen, 4, raw, sizeof(raw))) {
+        g_out.printf("  readTagText: unauth read OK (%lu ms), parsing NDEF...\n",
+                     (unsigned long)(millis() - rdStart));
         return parseTextNDEF(raw, sizeof(raw), out, outSize);
+    }
+    g_out.printf("  readTagText: unauth read FAILED (%lu ms)\n",
+                 (unsigned long)(millis() - rdStart));
 
     // Read failed.  If the tag is protected, try PWD_AUTH and retry.
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
@@ -824,8 +845,14 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
         }
         // Auth succeeded — retry the read
         memset(raw, 0, sizeof(raw));
-        if (readTagData(uid, uidLen, 4, raw, sizeof(raw)))
+        rdStart = millis();
+        if (readTagData(uid, uidLen, 4, raw, sizeof(raw))) {
+            g_out.printf("  readTagText: auth read OK (%lu ms)\n",
+                         (unsigned long)(millis() - rdStart));
             return parseTextNDEF(raw, sizeof(raw), out, outSize);
+        }
+        g_out.printf("  readTagText: auth read FAILED (%lu ms)\n",
+                     (unsigned long)(millis() - rdStart));
     }
 
     return false;
@@ -1161,8 +1188,13 @@ void setup() {
             .callback = keep_awake_cb,
             .name = "keep_awake"
         };
-        esp_timer_create(&timer_args, &g_keep_awake_timer);
-        esp_timer_start_periodic(g_keep_awake_timer, 5000);  // 5 ms
+        esp_err_t err = esp_timer_create(&timer_args, &g_keep_awake_timer);
+        if (err == ESP_OK) {
+            err = esp_timer_start_periodic(g_keep_awake_timer, 5000);  // 5 ms
+            g_out.printf("Keep-awake timer: %s\n", err == ESP_OK ? "started (5ms)" : "START FAILED");
+        } else {
+            g_out.printf("Keep-awake timer: CREATE FAILED (err=%d)\n", err);
+        }
     }
 
     pinMode(BUZZER_PIN, OUTPUT);
@@ -1255,6 +1287,13 @@ void setup() {
 }
 
 void loop() {
+    static uint32_t lastLoopLog = 0;
+    uint32_t loopStart = millis();
+    if (loopStart - lastLoopLog >= 5000) {
+        lastLoopLog = loopStart;
+        // (loop iteration timing logged only when slow)
+    }
+
     // ── Periodic time re-sync (hourly) ──
     if (millis() - g_last_time_sync_ms > TIME_SYNC_INTERVAL_MS) {
         g_out.print(F("Re-syncing time… "));
@@ -1280,7 +1319,13 @@ void loop() {
         static uint8_t lastAnnUIDLen   = 0;
 
         uint8_t uid[7], uidLen;
-        if (waitForTag(uid, &uidLen, 200)) {
+        uint32_t wtStart = millis();
+        bool found = waitForTag(uid, &uidLen, 200);
+        uint32_t wtElapsed = millis() - wtStart;
+        if (found && wtElapsed > 10) {
+            g_out.printf("  SLOW waitForTag: %lu ms\n", (unsigned long)wtElapsed);
+        }
+        if (found) {
             bool isNewAnnounce = (uidLen != lastAnnUIDLen
                                   || memcmp(uid, lastAnnUID, uidLen));
             bool isNewGood     = (uidLen != lastGoodUIDLen
@@ -1322,7 +1367,12 @@ void loop() {
                 } else {
                     // No pending write — read the tag
                     char text[ZB_TEXT_MAX_LEN + 1] = "";
-                    if (readTagText(uid, uidLen, text, sizeof(text))) {
+                    uint32_t rdStart = millis();
+                    bool rdOk = readTagText(uid, uidLen, text, sizeof(text));
+                    uint32_t rdElapsed = millis() - rdStart;
+                    g_out.printf("  readTagText: %s (%lu ms)\n",
+                                 rdOk ? "OK" : "FAIL", (unsigned long)rdElapsed);
+                    if (rdOk) {
                         g_out.print(F("  ")); g_out.println(text);
                         updateNfcState(uid, uidLen, text);
                         memcpy(lastGoodUID, uid, uidLen);
@@ -1385,5 +1435,9 @@ void loop() {
         btnPressStart = 0;
     }
 
+    uint32_t loopElapsed = millis() - loopStart;
+    if (loopElapsed > 50) {
+        g_out.printf("  *** SLOW loop iteration: %lu ms\n", (unsigned long)loopElapsed);
+    }
     delay(10);
 }
