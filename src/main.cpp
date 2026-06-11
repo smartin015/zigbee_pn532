@@ -1090,7 +1090,15 @@ static bool checkNfcPresence() {
     static bool was_present = false;
 
     Wire.beginTransmission(PN532_I2C_ADDR);
-    bool present = (Wire.endTransmission() == 0);
+    uint8_t err = Wire.endTransmission();
+    bool present = (err == 0);
+
+    // If the I2C bus timed out it may be stuck; reset the peripheral.
+    if (err == 5) {
+        Wire.end();
+        delay(5);
+        nfc.begin();  // re-init with correct pins
+    }
 
     if (present && !was_present) {
         // Freshly attached — configure SAM
@@ -1138,76 +1146,7 @@ void setup() {
     digitalWrite(BUZZER_PIN, LOW);
     beep(30);  // short power-on chirp
 
-    // ── PN532 ──
-    nfc.begin();
-    uint32_t ver = nfc.getFirmwareVersion();
-    if (ver) {
-        Serial.printf("PN532: chip=0x%02lX  fw=%lu.%lu\n",
-                      (ver >> 24) & 0xFF, (ver >> 16) & 0xFF, (ver >> 8) & 0xFF);
-        nfc.SAMConfig();
-        g_nfc_reader_present = true;
-    } else {
-        Serial.println(F("PN532 not found at boot — will poll for hot-plug…"));
-        g_nfc_reader_present = false;
-    }
-    g_nfc_last_check_ms = millis();
 
-    // ── Zigbee ──
-    nfcEp.setManufacturerAndModel("Espressif", "ZigbeeNFCEndpoint");
-
-    // Add Time cluster so we can sync UTC from the coordinator
-    nfcEp.addTimeCluster();
-
-    Zigbee.addEndpoint(&nfcEp);
-
-    Serial.println(F("Starting Zigbee (End Device)…"));
-    if (!Zigbee.begin()) {
-        Serial.println(F("Zigbee failed to start! Rebooting…"));
-        ESP.restart();
-    }
-    Serial.println(F("Zigbee started, connecting to network…"));
-    while (!Zigbee.connected()) {
-        Serial.print('.');
-        delay(100);
-    }
-    Serial.println();
-    Serial.println(F("Connected ✓"));
-
-    // ── Sync time from coordinator ──
-    Serial.print(F("Syncing time from coordinator… "));
-    struct tm now = nfcEp.getTime(1, 0x0000);
-    if (now.tm_year > 0) {
-        // getTime() internally calls localtime() which mangles UTC.
-        // But our zbReadTimeCluster override already captured the raw
-        // UTC value.  If that didn't fire, fall back to what we have.
-        if (g_time_sync_utc == 0) {
-            // Use the struct tm returned — but it's in local time, not UTC.
-            // Best-effort: assume system timezone is UTC.
-            g_time_sync_utc    = mktime(&now);
-            g_time_sync_millis = millis();
-        }
-        Serial.printf("OK (Unix UTC=%lu)\n", (unsigned long)g_time_sync_utc);
-    } else {
-        Serial.println(F("failed — timestamps will be empty until next sync"));
-    }
-    g_last_time_sync_ms = millis();
-
-    // Initial report of reader presence
-    nfcEp.setReaderPresent(g_nfc_reader_present);
-    nfcEp.reportReaderPresent();
-
-    loadAuthFromNVS();
-
-    // Report persisted auth settings to the coordinator
-    if (g_auth_enabled) {
-        nfcEp.reportAuthPwd();
-        nfcEp.reportAuthPack();
-    }
-    nfcEp.reportAuthEnabled();
-
-    Serial.println(F("\nContinuous read is ON — tags will be scanned automatically."));
-    Serial.println(F("Commands:  r)ead  w)rite  c)toggle-continuous  s)tatus  f)actory-reset  ?)help"));
-    Serial.println(F("Ready.\n"));
 }
 
 void loop() {
