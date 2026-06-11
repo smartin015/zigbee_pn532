@@ -19,7 +19,8 @@
  *     attr 0x0005  nfc_auth_pack      octet string  RW   (2 bytes)
  *     attr 0x0006  nfc_auth_enabled   bool          RW
  *     attr 0x0007  nfc_last_read_ts   uint32        R, reportable
- *     attr 0x0008  nfc_last_write_ts  uint32        R, reportable
+ *     attr 0x0008  nfc_last_write_ts  char string   R, reportable
+ *     attr 0x0009  nfc_last_seen_ts   char string   R, reportable
  *
  * ── Wiring (I2C) ──────────────────────────────────────────────────────
  *   Xiao ESP32C6  →  PN532
@@ -65,6 +66,7 @@
 #define ZB_ATTR_NFC_AUTH_ENABLED   0x0006
 #define ZB_ATTR_NFC_LAST_READ_TS   0x0007
 #define ZB_ATTR_NFC_LAST_WRITE_TS  0x0008
+#define ZB_ATTR_NFC_LAST_SEEN_TS   0x0009
 #define ZB_TEXT_MAX_LEN            128
 
 // ── NDEF constants ─────────────────────────────────────────────────────
@@ -95,6 +97,7 @@ static bool     g_auth_enabled      = false;
 #define ZB_TS_STR_LEN            21    // "YYYY-MM-DDTHH:MM:SSZ" includes null
 static uint8_t  g_last_read_ts_buf [ZB_TS_STR_LEN + 2] = {0};  // len + text + null
 static uint8_t  g_last_write_ts_buf[ZB_TS_STR_LEN + 2] = {0};
+static uint8_t  g_last_seen_ts_buf [ZB_TS_STR_LEN + 2] = {0};
 
 // Time sync — offset between Zigbee UTC and local millis()
 static time_t   g_time_sync_utc     = 0;    // Unix UTC seconds at last sync
@@ -228,6 +231,15 @@ public:
             ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
             g_last_write_ts_buf);
 
+        // Attr 0x0009: nfc_last_seen_ts (char string, read + reportable)
+        // Updated whenever any tag is detected, even without NDEF text.
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
+            ZB_ATTR_NFC_LAST_SEEN_TS,
+            ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+            g_last_seen_ts_buf);
+
         esp_zb_cluster_list_add_custom_cluster(
             _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
@@ -326,6 +338,18 @@ public:
 
     bool reportLastWriteTs() {
         return reportAttr(ZB_ATTR_NFC_LAST_WRITE_TS);
+    }
+
+    bool setLastSeenTs(time_t utc) {
+        formatISO8601(utc, g_last_seen_ts_buf);
+        esp_zb_zcl_status_t ret = setClusterAttribute(
+            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ATTR_NFC_LAST_SEEN_TS, g_last_seen_ts_buf, false);
+        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
+    }
+
+    bool reportLastSeenTs() {
+        return reportAttr(ZB_ATTR_NFC_LAST_SEEN_TS);
     }
 
     bool setAuthPwd(const uint8_t *pwd) {
@@ -710,6 +734,8 @@ static void console_read() {
         return;
     }
     printUID(uid, uidLen);
+    nfcEp.setLastSeenTs(getCurrentUtc());
+    nfcEp.reportLastSeenTs();
 
     char text[ZB_TEXT_MAX_LEN + 1] = "";
     if (readTagText(uid, uidLen, text, sizeof(text))) {
@@ -742,6 +768,8 @@ static void console_write() {
         Serial.println(F("Timeout.")); return;
     }
     printUID(uid, uidLen);
+    nfcEp.setLastSeenTs(getCurrentUtc());
+    nfcEp.reportLastSeenTs();
 
     if (writeTagText(uid, uidLen, in.c_str())) {
         Serial.println(F("✓ Written."));
@@ -771,6 +799,8 @@ static void console_dump() {
         Serial.println(F("Timeout.")); return;
     }
     printUID(uid, uidLen);
+    nfcEp.setLastSeenTs(getCurrentUtc());
+    nfcEp.reportLastSeenTs();
 
     // Authenticate if required (pages 4+ are protected when auth enabled)
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
@@ -864,6 +894,12 @@ static void console_status() {
     Serial.print(F("  NFC UID:    "));
     if (g_nfc_uid_len) printUID(g_nfc_uid_buf + 1, g_nfc_uid_len);
     else Serial.println(F("(none)"));
+    Serial.print(F("  Last seen:  "));
+    Serial.println(g_last_seen_ts_buf[0] ? (const char *)(g_last_seen_ts_buf + 1) : "(none)");
+    Serial.print(F("  Last read:  "));
+    Serial.println(g_last_read_ts_buf[0] ? (const char *)(g_last_read_ts_buf + 1) : "(none)");
+    Serial.print(F("  Last write: "));
+    Serial.println(g_last_write_ts_buf[0] ? (const char *)(g_last_write_ts_buf + 1) : "(none)");
     Serial.print(F("  Pending write: "));
     if (g_has_pending_write && g_pending_write_buf[0]) {
         Serial.print('"'); Serial.print((const char *)(g_pending_write_buf + 1)); Serial.println('"');
@@ -1027,6 +1063,10 @@ void loop() {
                 lastUIDLen = uidLen;
 
                 printUID(uid, uidLen);
+
+                // Stamp tag presence regardless of NDEF outcome
+                nfcEp.setLastSeenTs(getCurrentUtc());
+                nfcEp.reportLastSeenTs();
 
                 // Priority: pending write from Zigbee coordinator?
                 if (g_has_pending_write && g_pending_write_buf[0]) {
