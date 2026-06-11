@@ -1204,13 +1204,6 @@ void setup() {
         ESP.restart();
     }
 
-    // Disable Zigbee radio sleep — this is a mains-powered device.
-    // When USB serial is disconnected, the Zigbee scheduler sees >20ms of idle
-    // (the default sleep threshold) and puts the radio to sleep.  Reports then
-    // wait until the next long-poll wakeup (~1-2s).  Disabling sleep keeps the
-    // radio always on, making reports near-instantaneous regardless of USB state.
-    esp_zb_sleep_enable(false);
-
     beep(30);
 
     g_out.println(F("Zigbee started, connecting to network…"));
@@ -1227,6 +1220,19 @@ void setup() {
     }
     g_out.println();
     g_out.println(F("Connected ✓"));
+
+    // Declare the ED as "rx on when idle" — receiver always on (mains-powered).
+    // Without this, the Zigbee stack defaults rx_on_when_idle to false for EDs,
+    // which causes the parent to deliver APS ACKs and ZCL Default Responses via
+    // indirect transmission (poll-based).  Each poll round-trip costs up to one
+    // long-poll interval (1000ms).  A single attribute report then needs two
+    // polls (APS ACK + Default Response) = ~2s total.  USB serial activity masks
+    // this by keeping the ED in fast-poll / turbo-poll mode.
+    //
+    // Calling this makes the parent deliver ACKs/responses directly, eliminating
+    // the polling delay regardless of USB state.
+    esp_zb_set_rx_on_when_idle(true);
+
     beep(30);
 
     g_out.print(F("Syncing time from coordinator… "));
