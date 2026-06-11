@@ -112,17 +112,22 @@ const fzLocal = {
 
 // ── toZigbee converters ───────────────────────────────────────────────
 
+// zigbee-herdsman option to skip attribute validation for custom clusters
+const WRITE_OPTS = {writeUndiv: true};
+
 const tzLocal = {
     nfc_pending_write: {
         key: ['nfc_pending_write'],
         convertSet: async (entity, key, value, meta) => {
-            // Send raw string — zigbee-herdsman adds the ZCL char string length
-            // prefix automatically when type is specified.
+            // zigbee-herdsman does NOT add the ZCL length prefix for CHAR_STRING
+            // (unlike OCTET_STRING), so we must include it ourselves.
             const text = value.slice(0, 128);
-            const buf = Buffer.from(text, 'utf8');
+            const buf = Buffer.alloc(1 + text.length);
+            buf[0] = text.length;
+            if (text.length > 0) buf.write(text, 1, 'utf8');
             await entity.write(CLUSTER, {
                 [ATTR_WRITE]: {value: buf, type: ZCL_CHAR_STRING},
-            });
+            }, WRITE_OPTS);
             return {state: {nfc_pending_write: text}};
         },
     },
@@ -137,7 +142,7 @@ const tzLocal = {
             const bytes = Buffer.from(hex, 'hex');
             await entity.write(CLUSTER, {
                 [ATTR_AUTH_PWD]: {value: bytes, type: ZCL_OCTET_STRING},
-            });
+            }, WRITE_OPTS);
             return {state: {nfc_auth_pwd: hex}};
         },
         convertGet: async (entity, key, meta) => {
@@ -153,7 +158,7 @@ const tzLocal = {
             const bytes = Buffer.from(hex, 'hex');
             await entity.write(CLUSTER, {
                 [ATTR_AUTH_PACK]: {value: bytes, type: ZCL_OCTET_STRING},
-            });
+            }, WRITE_OPTS);
             return {state: {nfc_auth_pack: hex}};
         },
         convertGet: async (entity, key, meta) => {
@@ -165,7 +170,7 @@ const tzLocal = {
         convertSet: async (entity, key, value, meta) => {
             await entity.write(CLUSTER, {
                 [ATTR_AUTH_ENABLED]: {value: !!value, type: ZCL_BOOLEAN},
-            });
+            }, WRITE_OPTS);
             return {state: {nfc_auth_enabled: !!value}};
         },
         convertGet: async (entity, key, meta) => {
