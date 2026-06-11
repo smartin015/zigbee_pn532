@@ -115,7 +115,7 @@ const tzLocal = {
             const buf = Buffer.alloc(1 + len);
             buf[0] = len;
             if (len > 0) buf.write(value.slice(0, len), 1, 'utf8');
-            await entity.write(CLUSTER, {[ATTR_WRITE]: buf});
+            await entity.write(CLUSTER, {[ATTR_WRITE]: buf}, {writeUndiv: true});
             return {state: {nfc_pending_write: value.slice(0, len)}};
         },
     },
@@ -129,7 +129,7 @@ const tzLocal = {
             const buf = Buffer.alloc(5);
             buf[0] = 4;  // length prefix
             bytes.copy(buf, 1);
-            await entity.write(CLUSTER, {[ATTR_AUTH_PWD]: buf});
+            await entity.write(CLUSTER, {[ATTR_AUTH_PWD]: buf}, {writeUndiv: true});
             return {state: {nfc_auth_pwd: hex}};
         },
         convertGet: async (entity, key, meta) => {
@@ -146,7 +146,7 @@ const tzLocal = {
             const buf = Buffer.alloc(3);
             buf[0] = 2;  // length prefix
             bytes.copy(buf, 1);
-            await entity.write(CLUSTER, {[ATTR_AUTH_PACK]: buf});
+            await entity.write(CLUSTER, {[ATTR_AUTH_PACK]: buf}, {writeUndiv: true});
             return {state: {nfc_auth_pack: hex}};
         },
         convertGet: async (entity, key, meta) => {
@@ -156,7 +156,7 @@ const tzLocal = {
     nfc_auth_enabled: {
         key: ['nfc_auth_enabled'],
         convertSet: async (entity, key, value, meta) => {
-            await entity.write(CLUSTER, {[ATTR_AUTH_ENABLED]: !!value});
+            await entity.write(CLUSTER, {[ATTR_AUTH_ENABLED]: !!value}, {writeUndiv: true});
             return {state: {nfc_auth_enabled: !!value}};
         },
         convertGet: async (entity, key, meta) => {
