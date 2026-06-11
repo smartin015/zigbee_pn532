@@ -485,13 +485,7 @@ public:
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ZB_ATTR_NFC_AUTH_ENABLED, &g_auth_enabled, false);
-        saveAuthToNVS();
-        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
-    }
 
-    const uint8_t *getAuthPwd() const { return g_auth_pwd_buf[0] == 4 ? g_auth_pwd_buf + 1 : nullptr; }
-    const uint8_t *getAuthPack() const { return g_auth_pack_buf[0] == 2 ? g_auth_pack_buf + 1 : nullptr; }
-    bool isAuthEnabled() const { return g_auth_enabled; }
 
 private:
     bool reportAttr(uint16_t attr_id) {
@@ -1193,6 +1187,13 @@ void setup() {
     nfcEp.reportReaderPresent();
 
     loadAuthFromNVS();
+
+    // Report persisted auth settings to the coordinator
+    if (g_auth_enabled) {
+        nfcEp.reportAuthPwd();
+        nfcEp.reportAuthPack();
+    }
+    nfcEp.reportAuthEnabled();
 
     Serial.println(F("\nContinuous read is ON — tags will be scanned automatically."));
     Serial.println(F("Commands:  r)ead  w)rite  c)toggle-continuous  s)tatus  f)actory-reset  ?)help"));
