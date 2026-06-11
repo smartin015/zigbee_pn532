@@ -485,7 +485,17 @@ public:
         esp_zb_zcl_status_t ret = setClusterAttribute(
             ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ZB_ATTR_NFC_AUTH_ENABLED, &g_auth_enabled, false);
+        saveAuthToNVS();
+        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
+    }
 
+    bool reportAuthPwd()     { return reportAttr(ZB_ATTR_NFC_AUTH_PWD); }
+    bool reportAuthPack()    { return reportAttr(ZB_ATTR_NFC_AUTH_PACK); }
+    bool reportAuthEnabled() { return reportAttr(ZB_ATTR_NFC_AUTH_ENABLED); }
+
+    const uint8_t *getAuthPwd() const { return g_auth_pwd_buf[0] == 4 ? g_auth_pwd_buf + 1 : nullptr; }
+    const uint8_t *getAuthPack() const { return g_auth_pack_buf[0] == 2 ? g_auth_pack_buf + 1 : nullptr; }
+    bool isAuthEnabled() const { return g_auth_enabled; }
 
 private:
     bool reportAttr(uint16_t attr_id) {
@@ -503,7 +513,6 @@ private:
         return ok;
     }
 
-private:
     // ── Capture Zigbee Time cluster updates for ISO 8601 timestamps ──
     void zbReadTimeCluster(const esp_zb_zcl_attribute_t *attribute) override {
         if (attribute->id == ESP_ZB_ZCL_ATTR_TIME_TIME_ID
