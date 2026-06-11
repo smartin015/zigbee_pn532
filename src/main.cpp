@@ -53,7 +53,8 @@
 // ── Pin definitions ────────────────────────────────────────────────────
 #define PN532_SDA       D4
 #define PN532_SCL       D5
-#define BUZZER_PIN      D6    // piezo buzzer (passive or active)
+#define BUZZER_PIN      D7    // piezo buzzer (passive or active)
+#define BUZZER_GND      D8
 #define PN532_I2C_ADDR  0x24   // PN532 default I2C address (7-bit)
 #define NFC_ENDPOINT    1
 
@@ -911,6 +912,7 @@ static void console_help() {
     Serial.println(F("  a — set auth password + pack (8+4 hex chars)"));
     Serial.println(F("  f — factory‑reset Zigbee & rejoin"));
     Serial.println(F("  d — raw tag memory dump (debug)"));
+    Serial.println(F("  b — beep"));
     Serial.println(F("  ? — this help"));
     Serial.println();
 }
@@ -1000,12 +1002,17 @@ static void pollNfcPresence() {
 // ==========================================================================
 
 void setup() {
+    // Switch to external antenna
+    digitalWrite(WIFI_ANT_CONFIG, HIGH);
+
     Serial.begin(115200);
     while (!Serial) delay(10);
     Serial.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
 
     // ── Buzzer ──
     pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(BUZZER_GND, OUTPUT);
+    digitalWrite(BUZZER_GND, LOW);
     digitalWrite(BUZZER_PIN, LOW);
     beep(30);  // short power-on chirp
 
@@ -1154,6 +1161,7 @@ void loop() {
             case '?': while (Serial.available()) Serial.read(); console_help();   break;
             case 'd': while (Serial.available()) Serial.read(); console_dump();   break;
             case 'a': while (Serial.available()) Serial.read(); console_auth();   break;
+            case 'b': while (Serial.available()) Serial.read(); beep(80); Serial.println("beep");   break;
             case 'f':
                 while (Serial.available()) Serial.read();
                 Serial.println(F("Factory reset…"));
