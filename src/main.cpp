@@ -1243,7 +1243,7 @@ void setup() {
         Serial.println(F("Ready.\n"));
     } else {
         // No USB host — shut down CDC so Serial output never blocks.
-        Serial.flush();
+        // Skip flush(): it waits for host ACK which never arrives headless.
         Serial.end();
     }
 
