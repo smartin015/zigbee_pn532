@@ -9,7 +9,11 @@ const tz = require('zigbee-herdsman-converters/converters/toZigbee');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const reporting = require('zigbee-herdsman-converters/lib/reporting');
 
-const CLUSTER = 0xFC00;
+// Z2M uses string cluster keys for fromZigbee matching (msg.cluster is a string),
+// but endpoint.bind/read/configureReporting expect a number. Keep both.
+const CLUSTER_NUM = 0xFC00;
+const CLUSTER_STR = '64512';
+
 const ATTR_TEXT = 0x0000;
 const ATTR_UID = 0x0001;
 const ATTR_WRITE = 0x0002;
@@ -66,7 +70,7 @@ function decodeOctetHex(raw) {
 
 const fzLocal = {
     nfc_text: {
-        cluster: CLUSTER,
+        cluster: CLUSTER_STR,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_TEXT];
@@ -80,7 +84,7 @@ const fzLocal = {
         },
     },
     nfc_tag_uid: {
-        cluster: CLUSTER,
+        cluster: CLUSTER_STR,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_UID];
@@ -94,7 +98,7 @@ const fzLocal = {
         },
     },
     nfc_pending_write: {
-        cluster: CLUSTER,
+        cluster: CLUSTER_STR,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_WRITE];
@@ -104,7 +108,7 @@ const fzLocal = {
         },
     },
     nfc_reader_present: {
-        cluster: CLUSTER,
+        cluster: CLUSTER_STR,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_PRESENT];
@@ -114,7 +118,7 @@ const fzLocal = {
         },
     },
     nfc_auth_enabled: {
-        cluster: CLUSTER,
+        cluster: CLUSTER_STR,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_AUTH_ENABLED];
@@ -124,7 +128,7 @@ const fzLocal = {
         },
     },
     nfc_auth_pwd: {
-        cluster: CLUSTER,
+        cluster: CLUSTER_STR,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_AUTH_PWD];
@@ -134,7 +138,7 @@ const fzLocal = {
         },
     },
     nfc_auth_pack: {
-        cluster: CLUSTER,
+        cluster: CLUSTER_STR,
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const val = msg.data[ATTR_AUTH_PACK];
@@ -162,7 +166,7 @@ const tzLocal = {
             const buf = Buffer.alloc(1 + text.length);
             buf[0] = text.length;
             if (text.length > 0) buf.write(text, 1, 'utf8');
-            await entity.write(CLUSTER, {
+            await entity.write(CLUSTER_NUM, {
                 [ATTR_WRITE]: {value: buf, type: ZCL_CHAR_STRING},
             }, WRITE_OPTS);
             return {state: {nfc_pending_write: text}};
@@ -177,13 +181,13 @@ const tzLocal = {
             // Send raw bytes — zigbee-herdsman adds the ZCL octet string length
             // prefix automatically when type is specified.
             const bytes = Buffer.from(hex, 'hex');
-            await entity.write(CLUSTER, {
+            await entity.write(CLUSTER_NUM, {
                 [ATTR_AUTH_PWD]: {value: bytes, type: ZCL_OCTET_STRING},
             }, WRITE_OPTS);
             return {state: {nfc_auth_pwd: hex}};
         },
         convertGet: async (entity, key, meta) => {
-            await entity.read(CLUSTER, [ATTR_AUTH_PWD]);
+            await entity.read(CLUSTER_NUM, [ATTR_AUTH_PWD]);
         },
     },
     nfc_auth_pack: {
@@ -193,25 +197,25 @@ const tzLocal = {
             const hex = value.replace(/[^0-9a-fA-F]/g, '');
             if (hex.length !== 4) throw new Error('nfc_auth_pack must be 4 hex chars (2 bytes)');
             const bytes = Buffer.from(hex, 'hex');
-            await entity.write(CLUSTER, {
+            await entity.write(CLUSTER_NUM, {
                 [ATTR_AUTH_PACK]: {value: bytes, type: ZCL_OCTET_STRING},
             }, WRITE_OPTS);
             return {state: {nfc_auth_pack: hex}};
         },
         convertGet: async (entity, key, meta) => {
-            await entity.read(CLUSTER, [ATTR_AUTH_PACK]);
+            await entity.read(CLUSTER_NUM, [ATTR_AUTH_PACK]);
         },
     },
     nfc_auth_enabled: {
         key: ['nfc_auth_enabled'],
         convertSet: async (entity, key, value, meta) => {
-            await entity.write(CLUSTER, {
+            await entity.write(CLUSTER_NUM, {
                 [ATTR_AUTH_ENABLED]: {value: !!value, type: ZCL_BOOLEAN},
             }, WRITE_OPTS);
             return {state: {nfc_auth_enabled: !!value}};
         },
         convertGet: async (entity, key, meta) => {
-            await entity.read(CLUSTER, [ATTR_AUTH_ENABLED]);
+            await entity.read(CLUSTER_NUM, [ATTR_AUTH_ENABLED]);
         },
     },
 };
@@ -260,7 +264,7 @@ const definition = {
 
         // Step 1: Bind (essential — without this, reports never reach the coordinator)
         try {
-            await reporting.bind(endpoint, coordinatorEndpoint, [CLUSTER]);
+            await reporting.bind(endpoint, coordinatorEndpoint, [CLUSTER_NUM]);
             logger.info('NFC Bridge: bound cluster 0xFC00');
         } catch (e) {
             logger.warn('NFC Bridge: bind failed — ' + e.message);
@@ -268,7 +272,7 @@ const definition = {
 
         // Step 2: Configure reporting (best-effort; custom clusters may not support it)
         try {
-            await endpoint.configureReporting(CLUSTER, [
+            await endpoint.configureReporting(CLUSTER_NUM, [
                 {attribute: ATTR_TEXT,    minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
                 {attribute: ATTR_UID,     minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
                 {attribute: ATTR_PRESENT, minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 1},
@@ -280,7 +284,7 @@ const definition = {
 
         // Step 3: Read initial attribute values
         try {
-            await endpoint.read(CLUSTER, [
+            await endpoint.read(CLUSTER_NUM, [
                 ATTR_TEXT, ATTR_UID, ATTR_PRESENT,
                 ATTR_AUTH_ENABLED, ATTR_AUTH_PWD, ATTR_AUTH_PACK,
             ]);
