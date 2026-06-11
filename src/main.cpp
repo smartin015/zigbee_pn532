@@ -760,6 +760,7 @@ static bool ntagConfigureAuth(const uint8_t *uid, uint8_t uidLen,
 }
 
 static void printUID(const uint8_t *uid, uint8_t uidLen) {
+    if (!g_serial_attached) return;
     Serial.print(F("UID: "));
     for (uint8_t i = 0; i < uidLen; i++) {
         if (uid[i] < 0x10) Serial.print('0');
@@ -1175,6 +1176,10 @@ void setup() {
     nfcEp.addTimeCluster();
     Zigbee.addEndpoint(&nfcEp);
 
+    // Must be called before Zigbee.begin() to take effect.
+    // Default ~7.5 s poll makes tag reports lag 15-20 s in Z2M.
+    esp_zb_set_default_long_poll_interval(1000);
+
     if (g_serial_attached)
         Serial.println(F("Starting Zigbee (End Device)…"));
     if (!Zigbee.begin()) {
@@ -1203,10 +1208,6 @@ void setup() {
         Serial.println(F("Connected ✓"));
     }
     beep(30);  // ④ joined
-
-    // Speed up End Device polling — default ~7.5 s makes tag reports
-    // take 15-20 s to reach the coordinator.  1 s is safe for mains power.
-    esp_zb_set_default_long_poll_interval(1000);
 
     // ── Time sync ──
     if (g_serial_attached)
