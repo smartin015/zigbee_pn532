@@ -51,6 +51,7 @@
 #include <Adafruit_PN532.h>
 #include <Preferences.h>
 #include <time.h>
+#include "esp_timer.h"
 
 // ── Pin definitions ────────────────────────────────────────────────────
 #define PN532_SDA       D4
@@ -81,6 +82,12 @@
 #define NDEF_TNF_WELL_KNOWN    0x01
 #define NDEF_MAX_PAYLOAD       128
 #define NFC_READ_BUF_SIZE      160   // pages 4..43 — covers full ZB_TEXT_MAX_LEN NDEF
+
+// ── Keep-awake timer ──────────────────────────────────────────────────
+// Prevents tickless idle from stretching delay() to the Zigbee long poll
+// interval (~1000ms) when USB serial is disconnected.
+static esp_timer_handle_t g_keep_awake_timer = nullptr;
+static void keep_awake_cb(void *arg) { /* no-op — just keeps the CPU awake */ }
 
 // ── Globals (Zigbee string format: first byte = length) ────────────────
 Adafruit_PN532  nfc(PN532_SDA, PN532_SCL);
@@ -1145,6 +1152,18 @@ void setup() {
     for (uint32_t wait = millis(); millis() - wait < 2000 && !Serial;) delay(10);
     if (!Serial) g_out = g_null_out;
     g_out.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
+
+    // Keep-awake timer: fires every 5ms to prevent tickless idle from
+    // stretching delay() to ~1000ms (the Zigbee long poll interval).
+    // This keeps PN532 polling responsive when USB serial is detached.
+    {
+        esp_timer_create_args_t timer_args = {
+            .callback = keep_awake_cb,
+            .name = "keep_awake"
+        };
+        esp_timer_create(&timer_args, &g_keep_awake_timer);
+        esp_timer_start_periodic(g_keep_awake_timer, 5000);  // 5 ms
+    }
 
     pinMode(BUZZER_PIN, OUTPUT);
     pinMode(BUZZER_GND, OUTPUT);

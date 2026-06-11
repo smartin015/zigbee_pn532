@@ -1,0 +1,8 @@
+# Disable FreeRTOS tickless idle mode
+# Tickless idle causes delay stretching in ESP-IDF by allowing the CPU to sleep
+# during idle periods, which throws off Arduino timing (millis/micros/delay)
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
+
+# Also disable automatic light sleep power management
+# This can also cause timing irregularities
+CONFIG_PM_ENABLE=n
