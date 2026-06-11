@@ -746,21 +746,21 @@ static bool ntagConfigureAuth(const uint8_t *uid, uint8_t uidLen,
         g_out.println(F("cfg: write PWD failed"));
         return false;
     }
-    delay(2);
+    delayMicroseconds(2000);
     // Write PACK to page 134 (first 2 bytes, RFUI zeroed)
     uint8_t packPage[4] = {pack2[0], pack2[1], 0x00, 0x00};
     if (!nfc.ntag2xx_WritePage(NTAG_PAGE_CFG_PACK, packPage)) {
         g_out.println(F("cfg: write PACK failed"));
         return false;
     }
-    delay(2);
+    delayMicroseconds(2000);
     // Read page 131, modify AUTH0 byte, write back
     uint8_t cfgPage[4] = {0};
     if (!nfc.ntag2xx_ReadPage(NTAG_PAGE_CFG_AUTH0, cfgPage)) {
         g_out.println(F("cfg: read AUTH0 page failed"));
         return false;
     }
-    delay(2);
+    delayMicroseconds(2000);
     cfgPage[2] = 0x04;  // AUTH0 = page 4 (protect NDEF data and above)
     if (!nfc.ntag2xx_WritePage(NTAG_PAGE_CFG_AUTH0, cfgPage)) {
         g_out.println(F("cfg: write AUTH0 failed"));
@@ -787,7 +787,8 @@ static bool readTagData(const uint8_t *uid, uint8_t uidLen,
     for (uint8_t i = 0; i < pages; i++) {
         if (!nfc.ntag2xx_ReadPage(page + i, buf + (i * 4)))
             return false;
-        delay(2);  // prevent tag-side timeout on long bursts
+        // Use busy-wait delayMicroseconds — delay() is stretched by tickless idle
+        delayMicroseconds(2000);
     }
     return true;
 }
@@ -1385,5 +1386,6 @@ void loop() {
         btnPressStart = 0;
     }
 
-    delay(10);
+    // Busy-wait to avoid tickless idle stretching (delay() → vTaskDelay can stretch to 1000ms)
+    delayMicroseconds(2000);
 }
