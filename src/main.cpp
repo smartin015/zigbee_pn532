@@ -21,7 +21,8 @@
  *     attr 0x0007  nfc_last_read_ts   uint32        R, reportable
  *     attr 0x0008  nfc_last_write_ts  char string   R, reportable
  *     attr 0x0009  nfc_last_seen_ts   char string   R, reportable
- *     attr 0x000A  nfc_buzzer_trigger bool          RW
+ *     attr 0x000A  nfc_buzzer_trigger   bool          RW
+ *     attr 0x000B  nfc_last_auth_fail_ts char string  R, reportable
  *
  * ── Wiring (I2C) ──────────────────────────────────────────────────────
  *   Xiao ESP32C6  →  PN532
@@ -69,8 +70,9 @@
 #define ZB_ATTR_NFC_LAST_READ_TS   0x0007
 #define ZB_ATTR_NFC_LAST_WRITE_TS  0x0008
 #define ZB_ATTR_NFC_LAST_SEEN_TS   0x0009
-#define ZB_ATTR_NFC_BUZZER_TRIGGER 0x000A
-#define ZB_TEXT_MAX_LEN            128
+#define ZB_ATTR_NFC_BUZZER_TRIGGER      0x000A
+#define ZB_ATTR_NFC_LAST_AUTH_FAIL_TS   0x000B
+#define ZB_TEXT_MAX_LEN                 128
 
 // ── NDEF constants ─────────────────────────────────────────────────────
 #define NDEF_TEXT_RECORD_TYPE  0x54
@@ -100,7 +102,8 @@ static bool     g_auth_enabled      = false;
 #define ZB_TS_STR_LEN            21    // "YYYY-MM-DDTHH:MM:SSZ" includes null
 static uint8_t  g_last_read_ts_buf [ZB_TS_STR_LEN + 2] = {0};  // len + text + null
 static uint8_t  g_last_write_ts_buf[ZB_TS_STR_LEN + 2] = {0};
-static uint8_t  g_last_seen_ts_buf [ZB_TS_STR_LEN + 2] = {0};
+static uint8_t  g_last_seen_ts_buf      [ZB_TS_STR_LEN + 2] = {0};
+static uint8_t  g_last_auth_fail_ts_buf [ZB_TS_STR_LEN + 2] = {0};
 
 // Buzzer trigger — set true by Z2M, cleared after beep
 static bool     g_buzzer_trigger = false;
@@ -261,6 +264,15 @@ public:
             ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
             &g_buzzer_trigger);
 
+        // Attr 0x000B: nfc_last_auth_fail_ts (char string, read + reportable)
+        // ISO 8601 timestamp of the last failed NTAG authentication attempt.
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
+            ZB_ATTR_NFC_LAST_AUTH_FAIL_TS,
+            ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+            g_last_auth_fail_ts_buf);
+
         esp_zb_cluster_list_add_custom_cluster(
             _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
@@ -371,6 +383,18 @@ public:
 
     bool reportLastSeenTs() {
         return reportAttr(ZB_ATTR_NFC_LAST_SEEN_TS);
+    }
+
+    bool setLastAuthFailTs(time_t utc) {
+        formatISO8601(utc, g_last_auth_fail_ts_buf);
+        esp_zb_zcl_status_t ret = setClusterAttribute(
+            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ATTR_NFC_LAST_AUTH_FAIL_TS, g_last_auth_fail_ts_buf, false);
+        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
+    }
+
+    bool reportLastAuthFailTs() {
+        return reportAttr(ZB_ATTR_NFC_LAST_AUTH_FAIL_TS);
     }
 
     bool setAuthPwd(const uint8_t *pwd) {
@@ -700,6 +724,8 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Auth failed — tag not trusted"));
+            nfcEp.setLastAuthFailTs(getCurrentUtc());
+            nfcEp.reportLastAuthFailTs();
             beep(500, 1200);  // long low beep: auth rejection
             return false;
         }
@@ -840,6 +866,8 @@ static void console_dump() {
     if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
         if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
             Serial.println(F("Auth failed — cannot dump protected pages"));
+            nfcEp.setLastAuthFailTs(getCurrentUtc());
+            nfcEp.reportLastAuthFailTs();
             beep(500, 1200);  // long low beep: auth rejection
             return;
         }
