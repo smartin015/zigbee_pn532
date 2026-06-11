@@ -21,6 +21,8 @@ const ATTR_PRESENT = 0x0003;
 const ATTR_AUTH_PWD = 0x0004;
 const ATTR_AUTH_PACK = 0x0005;
 const ATTR_AUTH_ENABLED = 0x0006;
+const ATTR_LAST_READ_TS = 0x0007;
+const ATTR_LAST_WRITE_TS = 0x0008;
 
 // ZCL data types used by the firmware (must match ESP_ZB_ZCL_ATTR_TYPE_*)
 const ZCL_OCTET_STRING = 0x41;
@@ -147,6 +149,26 @@ const fzLocal = {
             }
         },
     },
+    nfc_last_read_ts: {
+        cluster: CLUSTER_STR,
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const val = msg.data[ATTR_LAST_READ_TS];
+            if (val !== undefined) {
+                return {nfc_last_read_ts: val};
+            }
+        },
+    },
+    nfc_last_write_ts: {
+        cluster: CLUSTER_STR,
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const val = msg.data[ATTR_LAST_WRITE_TS];
+            if (val !== undefined) {
+                return {nfc_last_write_ts: val};
+            }
+        },
+    },
 };
 
 // ── toZigbee converters ───────────────────────────────────────────────
@@ -235,6 +257,8 @@ const definition = {
         fzLocal.nfc_auth_enabled,
         fzLocal.nfc_auth_pwd,
         fzLocal.nfc_auth_pack,
+        fzLocal.nfc_last_read_ts,
+        fzLocal.nfc_last_write_ts,
     ],
     toZigbee: [
         tzLocal.nfc_pending_write,
@@ -257,6 +281,10 @@ const definition = {
             .withDescription('NTAG authentication password (4 bytes, hex)'),
         exposes.text('nfc_auth_pack', exposes.access.ALL)
             .withDescription('NTAG password acknowledge (2 bytes, hex)'),
+        exposes.numeric('nfc_last_read_ts', exposes.access.STATE)
+            .withDescription('Timestamp (ms) of the last successful tag read'),
+        exposes.numeric('nfc_last_write_ts', exposes.access.STATE)
+            .withDescription('Timestamp (ms) of the last successful tag write'),
     ],
     meta: {multiEndpoint: false},
     configure: async (device, coordinatorEndpoint, logger) => {
@@ -273,9 +301,11 @@ const definition = {
         // Step 2: Configure reporting (best-effort; custom clusters may not support it)
         try {
             await endpoint.configureReporting(CLUSTER_NUM, [
-                {attribute: ATTR_TEXT,    minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
-                {attribute: ATTR_UID,     minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
-                {attribute: ATTR_PRESENT, minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 1},
+                {attribute: ATTR_TEXT,        minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
+                {attribute: ATTR_UID,         minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
+                {attribute: ATTR_PRESENT,     minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 1},
+                {attribute: ATTR_LAST_READ_TS,  minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
+                {attribute: ATTR_LAST_WRITE_TS, minimumReportInterval: 0, maximumReportInterval: 3600, reportableChange: 0},
             ]);
             logger.info('NFC Bridge: reporting configured for cluster 0xFC00');
         } catch (e) {
@@ -287,6 +317,7 @@ const definition = {
             await endpoint.read(CLUSTER_NUM, [
                 ATTR_TEXT, ATTR_UID, ATTR_PRESENT,
                 ATTR_AUTH_ENABLED, ATTR_AUTH_PWD, ATTR_AUTH_PACK,
+                ATTR_LAST_READ_TS, ATTR_LAST_WRITE_TS,
             ]);
             logger.info('NFC Bridge: read initial values sent');
         } catch (e) {

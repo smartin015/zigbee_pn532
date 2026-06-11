@@ -18,6 +18,8 @@
  *     attr 0x0004  nfc_auth_pwd       octet string  RW   (4 bytes)
  *     attr 0x0005  nfc_auth_pack      octet string  RW   (2 bytes)
  *     attr 0x0006  nfc_auth_enabled   bool          RW
+ *     attr 0x0007  nfc_last_read_ts   uint32        R, reportable
+ *     attr 0x0008  nfc_last_write_ts  uint32        R, reportable
  *
  * ── Wiring (I2C) ──────────────────────────────────────────────────────
  *   Xiao ESP32C6  →  PN532
@@ -30,7 +32,7 @@
  * ── Serial console ────────────────────────────────────────────────────
  *   r  read & report tag once
  *   w  prompt for text, write to next tag
- *   c  continuous scan (any key stops)
+ *   c  toggle continuous read mode (on by default)
  *   s  show Zigbee & PN532 status
  *   f  factory‑reset Zigbee & rejoin
  *   ?  help
@@ -60,6 +62,8 @@
 #define ZB_ATTR_NFC_AUTH_PWD       0x0004
 #define ZB_ATTR_NFC_AUTH_PACK      0x0005
 #define ZB_ATTR_NFC_AUTH_ENABLED   0x0006
+#define ZB_ATTR_NFC_LAST_READ_TS   0x0007
+#define ZB_ATTR_NFC_LAST_WRITE_TS  0x0008
 #define ZB_TEXT_MAX_LEN            128
 
 // ── NDEF constants ─────────────────────────────────────────────────────
@@ -85,6 +89,13 @@ static bool     g_auth_enabled      = false;
 #define NTAG_PAGE_CFG_AUTH0        131     // page 0x83: mirror, mirror_page, AUTH0, ACCESS
 #define NTAG_PAGE_CFG_PWD          133     // page 0x85: PWD[4]
 #define NTAG_PAGE_CFG_PACK         134     // page 0x86: PACK[2], RFUI[2]
+
+// Timestamps for last read/write (millis())
+static uint32_t g_last_read_ts  = 0;
+static uint32_t g_last_write_ts = 0;
+
+// Continuous read mode — always on at boot
+static bool     g_continuous_read = true;
 
 // PN532 hot-plug state
 static bool     g_nfc_reader_present = false;
@@ -185,6 +196,22 @@ public:
             ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
             &g_auth_enabled);
 
+        // Attr 0x0007: nfc_last_read_ts (uint32, read + reportable)
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
+            ZB_ATTR_NFC_LAST_READ_TS,
+            ESP_ZB_ZCL_ATTR_TYPE_U32,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+            &g_last_read_ts);
+
+        // Attr 0x0008: nfc_last_write_ts (uint32, read + reportable)
+        esp_zb_custom_cluster_add_custom_attr(
+            nfc_attr_list,
+            ZB_ATTR_NFC_LAST_WRITE_TS,
+            ESP_ZB_ZCL_ATTR_TYPE_U32,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+            &g_last_write_ts);
+
         esp_zb_cluster_list_add_custom_cluster(
             _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
@@ -246,6 +273,30 @@ public:
 
     bool reportReaderPresent() {
         return reportAttr(ZB_ATTR_NFC_READER_PRESENT);
+    }
+
+    bool setLastReadTs(uint32_t ts) {
+        g_last_read_ts = ts;
+        esp_zb_zcl_status_t ret = setClusterAttribute(
+            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ATTR_NFC_LAST_READ_TS, &g_last_read_ts, false);
+        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
+    }
+
+    bool reportLastReadTs() {
+        return reportAttr(ZB_ATTR_NFC_LAST_READ_TS);
+    }
+
+    bool setLastWriteTs(uint32_t ts) {
+        g_last_write_ts = ts;
+        esp_zb_zcl_status_t ret = setClusterAttribute(
+            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ATTR_NFC_LAST_WRITE_TS, &g_last_write_ts, false);
+        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
+    }
+
+    bool reportLastWriteTs() {
+        return reportAttr(ZB_ATTR_NFC_LAST_WRITE_TS);
     }
 
     bool setAuthPwd(const uint8_t *pwd) {
@@ -317,9 +368,13 @@ private:
                     g_pending_write_buf[1 + srcLen] = '\0';
                     g_has_pending_write = (srcLen > 0);
 
-                    Serial.print(F("Zb: queued write text = \""));
-                    Serial.print((const char *)(g_pending_write_buf + 1));
-                    Serial.println('"');
+                    if (g_has_pending_write) {
+                        Serial.print(F("Zb: queued write text = \""));
+                        Serial.print((const char *)(g_pending_write_buf + 1));
+                        Serial.println('"');
+                    } else {
+                        Serial.println(F("Zb: pending write cancelled (empty string)"));
+                    }
                 }
             } else if (message->attribute.id == ZB_ATTR_NFC_AUTH_PWD) {
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
@@ -575,6 +630,11 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
             // Don't fail the whole write; data is on the tag.
         }
     }
+
+    // Timestamp the write
+    nfcEp.setLastWriteTs(millis());
+    nfcEp.reportLastWriteTs();
+
     return true;
 }
 
@@ -586,6 +646,9 @@ static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
     nfcEp.setNfcUid(uid, uidLen);
     nfcEp.reportNfcText();
     nfcEp.reportNfcUid();
+    // Timestamp the read
+    nfcEp.setLastReadTs(millis());
+    nfcEp.reportLastReadTs();
 }
 
 // ==========================================================================
@@ -648,54 +711,9 @@ static void console_write() {
     }
 }
 
-static void console_scan() {
-    if (!g_nfc_reader_present) {
-        Serial.println(F("PN532 not present — cannot scan."));
-        return;
-    }
-    Serial.println(F("Continuous scan — any key to stop."));
-    uint8_t lastUID[7] = {0};
-    uint8_t lastUIDLen  = 0;
-
-    while (!Serial.available()) {
-        uint8_t uid[7], uidLen;
-        if (!waitForTag(uid, &uidLen, 200)) {
-            memset(lastUID, 0, 7);
-            lastUIDLen = 0;
-            delay(100);
-            continue;
-        }
-        if (uidLen == lastUIDLen && !memcmp(uid, lastUID, uidLen)) {
-            delay(100); continue;
-        }
-        memcpy(lastUID, uid, uidLen);
-        lastUIDLen = uidLen;
-
-        printUID(uid, uidLen);
-
-        char text[ZB_TEXT_MAX_LEN + 1] = "";
-        if (readTagText(uid, uidLen, text, sizeof(text))) {
-            Serial.print(F("  ")); Serial.println(text);
-            updateNfcState(uid, uidLen, text);
-        }
-
-        if (g_has_pending_write && g_pending_write_buf[0]) {
-            Serial.print(F("  -> writing pending: "));
-            Serial.println((const char *)(g_pending_write_buf + 1));
-            if (writeTagText(uid, uidLen, (const char *)(g_pending_write_buf + 1))) {
-                Serial.println(F("  ✓ written."));
-            } else {
-                Serial.println(F("  x write failed."));
-            }
-            g_has_pending_write = false;
-            g_pending_write_buf[0] = 0;
-            g_pending_write_buf[1] = '\0';
-            nfcEp.setPendingWrite("");
-        }
-        delay(300);
-    }
-    while (Serial.available()) Serial.read();
-    Serial.println(F("\nStopped."));
+static void console_scan_toggle() {
+    g_continuous_read = !g_continuous_read;
+    Serial.printf("Continuous read: %s\n", g_continuous_read ? "ON" : "OFF");
 }
 
 // Dump raw tag memory for debugging
@@ -782,7 +800,7 @@ static void console_help() {
     Serial.println(F("\nCommands:"));
     Serial.println(F("  r — read & report tag once"));
     Serial.println(F("  w — prompt for text, write to next tag"));
-    Serial.println(F("  c — continuous scan (any key stops)"));
+    Serial.println(F("  c — toggle continuous read mode (on by default)"));
     Serial.println(F("  s — show Zigbee & PN532 status"));
     Serial.println(F("  a — set auth password + pack (8+4 hex chars)"));
     Serial.println(F("  f — factory‑reset Zigbee & rejoin"));
@@ -910,7 +928,8 @@ void setup() {
     nfcEp.setReaderPresent(g_nfc_reader_present);
     nfcEp.reportReaderPresent();
 
-    Serial.println(F("\nCommands:  r)ead  w)rite  c)ontinuous scan  s)tatus  f)actory-reset  ?)help"));
+    Serial.println(F("\nContinuous read is ON — tags will be scanned automatically."));
+    Serial.println(F("Commands:  r)ead  w)rite  c)toggle-continuous  s)tatus  f)actory-reset  ?)help"));
     Serial.println(F("Ready.\n"));
 }
 
@@ -918,31 +937,54 @@ void loop() {
     // ── Poll PN532 presence (hot-plug detection) ──
     pollNfcPresence();
 
-    // ── Pending write from Zigbee coordinator? ──
-    if (g_nfc_reader_present && g_has_pending_write && g_pending_write_buf[0]) {
-        Serial.print(F("Pending write from Zb: \""));
-        Serial.print((const char *)(g_pending_write_buf + 1));
-        Serial.println(F("\" — bring a tag…"));
+    // ── Continuous read mode (always on at boot) ──
+    if (g_continuous_read && g_nfc_reader_present) {
+        static uint8_t lastUID[7] = {0};
+        static uint8_t lastUIDLen  = 0;
 
         uint8_t uid[7], uidLen;
-        if (waitForTag(uid, &uidLen, 30000)) {
-            printUID(uid, uidLen);
-            if (writeTagText(uid, uidLen, (const char *)(g_pending_write_buf + 1))) {
-                Serial.println(F("✓ Written via Zigbee."));
-                char txt[ZB_TEXT_MAX_LEN + 1] = "";
-                if (readTagText(uid, uidLen, txt, sizeof(txt))) {
-                    updateNfcState(uid, uidLen, txt);
+        if (waitForTag(uid, &uidLen, 200)) {
+            // Debounce: skip if same tag still present
+            if (uidLen != lastUIDLen || memcmp(uid, lastUID, uidLen)) {
+                memcpy(lastUID, uid, uidLen);
+                lastUIDLen = uidLen;
+
+                printUID(uid, uidLen);
+
+                // Priority: pending write from Zigbee coordinator?
+                if (g_has_pending_write && g_pending_write_buf[0]) {
+                    Serial.print(F("  -> writing pending: "));
+                    Serial.println((const char *)(g_pending_write_buf + 1));
+                    if (writeTagText(uid, uidLen, (const char *)(g_pending_write_buf + 1))) {
+                        Serial.println(F("  ✓ written."));
+                        // Read back what we just wrote
+                        char txt[ZB_TEXT_MAX_LEN + 1] = "";
+                        if (readTagText(uid, uidLen, txt, sizeof(txt))) {
+                            updateNfcState(uid, uidLen, txt);
+                        }
+                    } else {
+                        Serial.println(F("  x write failed."));
+                    }
+                    g_has_pending_write = false;
+                    g_pending_write_buf[0] = 0;
+                    g_pending_write_buf[1] = '\0';
+                    nfcEp.setPendingWrite("");
+                } else {
+                    // No pending write — read the tag
+                    char text[ZB_TEXT_MAX_LEN + 1] = "";
+                    if (readTagText(uid, uidLen, text, sizeof(text))) {
+                        Serial.print(F("  ")); Serial.println(text);
+                        updateNfcState(uid, uidLen, text);
+                    } else {
+                        Serial.println(F("  (no NDEF text record — ignored)"));
+                    }
                 }
-            } else {
-                Serial.println(F("x Zigbee-initiated write failed."));
             }
         } else {
-            Serial.println(F("Timeout — write cancelled."));
+            // No tag in range — reset debounce memory
+            memset(lastUID, 0, 7);
+            lastUIDLen = 0;
         }
-        g_has_pending_write = false;
-        g_pending_write_buf[0] = 0;
-        g_pending_write_buf[1] = '\0';
-        nfcEp.setPendingWrite("");
     }
 
     // ── Serial commands ──
@@ -950,7 +992,7 @@ void loop() {
         switch ((char)Serial.read()) {
             case 'r': while (Serial.available()) Serial.read(); console_read();   break;
             case 'w': while (Serial.available()) Serial.read(); console_write();  break;
-            case 'c': while (Serial.available()) Serial.read(); console_scan();   break;
+            case 'c': while (Serial.available()) Serial.read(); console_scan_toggle(); break;
             case 's': while (Serial.available()) Serial.read(); console_status(); break;
             case '?': while (Serial.available()) Serial.read(); console_help();   break;
             case 'd': while (Serial.available()) Serial.read(); console_dump();   break;
