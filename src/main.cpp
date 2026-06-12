@@ -46,6 +46,7 @@
 #include <time.h>
 #include "esp_timer.h"
 #include "esp_mac.h"
+#include "esp_ieee802154.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -1127,7 +1128,7 @@ void setup() {
         }
         p.end();
     }
-    esp_zb_set_long_address(ieee_addr);
+    esp_ieee802154_set_extended_address(ieee_addr);
     g_out.printf("IEEE addr: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
                  ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
                  ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
