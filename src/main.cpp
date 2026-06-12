@@ -35,8 +35,8 @@
  */
 
 #include <Arduino.h>
-#ifndef ZIGBEE_MODE_ZR
-#error "Zigbee router mode is not selected in Tools->Zigbee mode"
+#ifndef ZIGBEE_MODE_ZCZR
+#error "Zigbee coordinator/router mode is not selected in Tools->Zigbee mode"
 #endif
 
 #include "Zigbee.h"
@@ -1060,6 +1060,7 @@ static void pollNfcPresence() {
 // ==========================================================================
 
 void setup() {
+    pinMode(WIFI_ANT_CONFIG, OUTPUT);
     digitalWrite(WIFI_ANT_CONFIG, HIGH);
 
     Serial.begin(115200);
@@ -1093,8 +1094,6 @@ void setup() {
 
     nfcEp.setManufacturerAndModel("Espressif", "ZigbeeNFCEndpoint");
     nfcEp.addTimeCluster();
-    // Report mains-powered so the Zigbee stack doesn't assume battery.
-    nfcEp.setPowerSource(ZB_POWER_SOURCE_MAINS);
     Zigbee.addEndpoint(&nfcEp);
 
     g_out.println(F("Starting Zigbee (Router)…"));
