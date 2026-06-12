@@ -15,14 +15,10 @@
  *     attr 0x0001  nfc_tag_uid        octet string  R, reportable
  *     attr 0x0002  nfc_pending_write  char string   RW
  *     attr 0x0003  nfc_reader_present bool          R, reportable
- *     attr 0x0004  nfc_auth_pwd       octet string  RW   (4 bytes)
- *     attr 0x0005  nfc_auth_pack      octet string  RW   (2 bytes)
- *     attr 0x0006  nfc_auth_enabled   bool          RW
  *     attr 0x0007  nfc_last_read_ts   uint32        R, reportable
  *     attr 0x0008  nfc_last_write_ts  char string   R, reportable
  *     attr 0x0009  nfc_last_seen_ts   char string   R, reportable
  *     attr 0x000A  nfc_buzzer_trigger   bool          RW
- *     attr 0x000B  nfc_last_auth_fail_ts char string  R, reportable
  *
  * ── Wiring (I2C) ──────────────────────────────────────────────────────
  *   Xiao ESP32C6  →  PN532
@@ -42,7 +38,6 @@
 #include "Zigbee.h"
 #include <Wire.h>
 #include <Adafruit_PN532.h>
-#include <Preferences.h>
 #include <time.h>
 #include "esp_timer.h"
 #include "esp_mac.h"
@@ -70,14 +65,10 @@ extern "C" {
 #define ZB_ATTR_NFC_UID            0x0001
 #define ZB_ATTR_NFC_WRITE          0x0002
 #define ZB_ATTR_NFC_READER_PRESENT 0x0003
-#define ZB_ATTR_NFC_AUTH_PWD       0x0004
-#define ZB_ATTR_NFC_AUTH_PACK      0x0005
-#define ZB_ATTR_NFC_AUTH_ENABLED   0x0006
 #define ZB_ATTR_NFC_LAST_READ_TS   0x0007
 #define ZB_ATTR_NFC_LAST_WRITE_TS  0x0008
 #define ZB_ATTR_NFC_LAST_SEEN_TS   0x0009
 #define ZB_ATTR_NFC_BUZZER_TRIGGER      0x000A
-#define ZB_ATTR_NFC_LAST_AUTH_FAIL_TS   0x000B
 #define ZB_TEXT_MAX_LEN                 128
 
 // ── NDEF constants ─────────────────────────────────────────────────────
@@ -96,21 +87,11 @@ static uint8_t  g_nfc_uid_len       = 0;
 static uint8_t  g_pending_write_buf[ZB_TEXT_MAX_LEN + 2] = {0};  // len + data + null
 static bool     g_has_pending_write = false;
 
-// Password authentication (PWD_AUTH + PACK)
-static uint8_t  g_auth_pwd_buf[5]  = {0};    // octet string: len(4) + 4 bytes
-static uint8_t  g_auth_pack_buf[3] = {0};    // octet string: len(2) + 2 bytes
-static bool     g_auth_enabled      = false;
-#define NTAG_CMD_PWD_AUTH          0x1B
-#define NTAG_PAGE_CFG_AUTH0         41     // page 0x29 byte 2 = AUTH0, byte 3 = ACCESS
-#define NTAG_PAGE_CFG_PWD           43     // page 0x2B: PWD[4]
-#define NTAG_PAGE_CFG_PACK          44     // page 0x2C: PACK[2], RFUI[2]
 
-// Timestamps for last read/write — ISO 8601 char strings ("YYYY-MM-DDTHH:MM:SSZ")
 #define ZB_TS_STR_LEN            21    // "YYYY-MM-DDTHH:MM:SSZ" includes null
 static uint8_t  g_last_read_ts_buf [ZB_TS_STR_LEN + 2] = {0};  // len + text + null
 static uint8_t  g_last_write_ts_buf[ZB_TS_STR_LEN + 2] = {0};
 static uint8_t  g_last_seen_ts_buf      [ZB_TS_STR_LEN + 2] = {0};
-static uint8_t  g_last_auth_fail_ts_buf [ZB_TS_STR_LEN + 2] = {0};
 
 // Buzzer trigger — set true by Z2M, cleared after beep
 static bool     g_buzzer_trigger = false;
@@ -136,66 +117,6 @@ static bool     g_continuous_read = true;
 static bool     g_nfc_reader_present = false;
 static uint32_t g_nfc_last_check_ms  = 0;
 #define NFC_PRESENCE_CHECK_INTERVAL_MS  5000
-
-// ── NVS persistence for auth settings ────────────────────────────────
-#define NVS_AUTH_NS  "nfc_auth"
-
-static void saveAuthToNVS() {
-    Preferences prefs;
-    if (!prefs.begin(NVS_AUTH_NS, false)) {
-        g_out.println(F("NVS: failed to open auth namespace for write"));
-        return;
-    }
-    if (g_auth_pwd_buf[0] == 4)
-        prefs.putBytes("pwd", g_auth_pwd_buf + 1, 4);
-    if (g_auth_pack_buf[0] == 2)
-        prefs.putBytes("pack", g_auth_pack_buf + 1, 2);
-    prefs.putBool("enabled", g_auth_enabled);
-    prefs.end();
-    g_out.println(F("NVS: auth settings saved"));
-}
-
-static void loadAuthFromNVS() {
-    Preferences prefs;
-    if (!prefs.begin(NVS_AUTH_NS, true)) {
-        g_out.println(F("NVS: no saved auth settings"));
-        return;
-    }
-    size_t len;
-    uint8_t buf[4];
-
-    len = prefs.getBytes("pwd", buf, 4);
-    if (len == 4) {
-        g_auth_pwd_buf[0] = 4;
-        memcpy(g_auth_pwd_buf + 1, buf, 4);
-    }
-
-    len = prefs.getBytes("pack", buf, 2);
-    if (len == 2) {
-        g_auth_pack_buf[0] = 2;
-        memcpy(g_auth_pack_buf + 1, buf, 2);
-    }
-
-    g_auth_enabled = prefs.getBool("enabled", false);
-    prefs.end();
-
-    g_out.print(F("NVS: loaded auth — enabled="));
-    g_out.print(g_auth_enabled ? F("YES pwd=") : F("NO  pwd="));
-    if (g_auth_pwd_buf[0] == 4) {
-        for (int i = 0; i < 4; i++) {
-            if (g_auth_pwd_buf[1+i] < 0x10) g_out.print('0');
-            g_out.print(g_auth_pwd_buf[1+i], HEX);
-        }
-    }
-    g_out.print(F(" pack="));
-    if (g_auth_pack_buf[0] == 2) {
-        for (int i = 0; i < 2; i++) {
-            if (g_auth_pack_buf[1+i] < 0x10) g_out.print('0');
-            g_out.print(g_auth_pack_buf[1+i], HEX);
-        }
-    }
-    g_out.println();
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -281,30 +202,6 @@ public:
             ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
             &g_nfc_reader_present);
 
-        // Attr 0x0004: nfc_auth_pwd (octet string, RW, 4 bytes)
-        esp_zb_custom_cluster_add_custom_attr(
-            nfc_attr_list,
-            ZB_ATTR_NFC_AUTH_PWD,
-            ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING,
-            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-            g_auth_pwd_buf);
-
-        // Attr 0x0005: nfc_auth_pack (octet string, RW, 2 bytes)
-        esp_zb_custom_cluster_add_custom_attr(
-            nfc_attr_list,
-            ZB_ATTR_NFC_AUTH_PACK,
-            ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING,
-            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-            g_auth_pack_buf);
-
-        // Attr 0x0006: nfc_auth_enabled (bool, RW)
-        esp_zb_custom_cluster_add_custom_attr(
-            nfc_attr_list,
-            ZB_ATTR_NFC_AUTH_ENABLED,
-            ESP_ZB_ZCL_ATTR_TYPE_BOOL,
-            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-            &g_auth_enabled);
-
         // Attr 0x0007: nfc_last_read_ts (char string, read + reportable)
         esp_zb_custom_cluster_add_custom_attr(
             nfc_attr_list,
@@ -338,15 +235,6 @@ public:
             ESP_ZB_ZCL_ATTR_TYPE_BOOL,
             ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
             &g_buzzer_trigger);
-
-        // Attr 0x000B: nfc_last_auth_fail_ts (char string, read + reportable)
-        // ISO 8601 timestamp of the last failed NTAG authentication attempt.
-        esp_zb_custom_cluster_add_custom_attr(
-            nfc_attr_list,
-            ZB_ATTR_NFC_LAST_AUTH_FAIL_TS,
-            ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
-            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-            g_last_auth_fail_ts_buf);
 
         esp_zb_cluster_list_add_custom_cluster(
             _cluster_list, nfc_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -460,55 +348,6 @@ public:
         return reportAttr(ZB_ATTR_NFC_LAST_SEEN_TS);
     }
 
-    bool setLastAuthFailTs(time_t utc) {
-        formatISO8601(utc, g_last_auth_fail_ts_buf);
-        esp_zb_zcl_status_t ret = setClusterAttribute(
-            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_LAST_AUTH_FAIL_TS, g_last_auth_fail_ts_buf, false);
-        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
-    }
-
-    bool reportLastAuthFailTs() {
-        return reportAttr(ZB_ATTR_NFC_LAST_AUTH_FAIL_TS);
-    }
-
-    bool setAuthPwd(const uint8_t *pwd) {
-        g_auth_pwd_buf[0] = 4;
-        memcpy(g_auth_pwd_buf + 1, pwd, 4);
-        esp_zb_zcl_status_t ret = setClusterAttribute(
-            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_AUTH_PWD, g_auth_pwd_buf, false);
-        saveAuthToNVS();
-        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
-    }
-
-    bool setAuthPack(const uint8_t *pack) {
-        g_auth_pack_buf[0] = 2;
-        memcpy(g_auth_pack_buf + 1, pack, 2);
-        esp_zb_zcl_status_t ret = setClusterAttribute(
-            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_AUTH_PACK, g_auth_pack_buf, false);
-        saveAuthToNVS();
-        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
-    }
-
-    bool setAuthEnabled(bool enabled) {
-        g_auth_enabled = enabled;
-        esp_zb_zcl_status_t ret = setClusterAttribute(
-            ZB_CLUSTER_NFC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ATTR_NFC_AUTH_ENABLED, &g_auth_enabled, false);
-        saveAuthToNVS();
-        return ret == ESP_ZB_ZCL_STATUS_SUCCESS;
-    }
-
-    bool reportAuthPwd()     { return reportAttr(ZB_ATTR_NFC_AUTH_PWD); }
-    bool reportAuthPack()    { return reportAttr(ZB_ATTR_NFC_AUTH_PACK); }
-    bool reportAuthEnabled() { return reportAttr(ZB_ATTR_NFC_AUTH_ENABLED); }
-
-    const uint8_t *getAuthPwd() const { return g_auth_pwd_buf[0] == 4 ? g_auth_pwd_buf + 1 : nullptr; }
-    const uint8_t *getAuthPack() const { return g_auth_pack_buf[0] == 2 ? g_auth_pack_buf + 1 : nullptr; }
-    bool isAuthEnabled() const { return g_auth_enabled; }
-
 private:
     bool reportAttr(uint16_t attr_id) {
         uint32_t t0 = micros();
@@ -570,60 +409,6 @@ private:
                     } else {
                         g_out.println(F("Zb: pending write cancelled (empty string)"));
                     }
-                }
-            } else if (message->attribute.id == ZB_ATTR_NFC_AUTH_PWD) {
-                if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
-                    && message->attribute.data.value != nullptr) {
-                    const uint8_t *src = (const uint8_t *)message->attribute.data.value;
-                    // Detect & unwrap double-encoding (see CHAR_STRING handler).
-                    if (message->attribute.data.size >= 3
-                        && message->attribute.data.size == (uint16_t)src[0] + 1
-                        && src[0] == src[1] + 1
-                        && src[1] <= ZB_TEXT_MAX_LEN) {
-                        src++;
-                    }
-                    uint8_t srcLen = src[0];  // ZCL octet string: [len][data…]
-                    if (srcLen >= 4) {
-                        g_auth_pwd_buf[0] = 4;
-                        memcpy(g_auth_pwd_buf + 1, src + 1, 4);
-                        saveAuthToNVS();
-                        g_out.print(F("Zb: auth PWD set = "));
-                        for (uint8_t i = 0; i < 4; i++) {
-                            if (g_auth_pwd_buf[1+i] < 0x10) g_out.print('0');
-                            g_out.print(g_auth_pwd_buf[1+i], HEX);
-                        }
-                        g_out.println();
-                    }
-                }
-            } else if (message->attribute.id == ZB_ATTR_NFC_AUTH_PACK) {
-                if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING
-                    && message->attribute.data.value != nullptr) {
-                    const uint8_t *src = (const uint8_t *)message->attribute.data.value;
-                    if (message->attribute.data.size >= 3
-                        && message->attribute.data.size == (uint16_t)src[0] + 1
-                        && src[0] == src[1] + 1
-                        && src[1] <= ZB_TEXT_MAX_LEN) {
-                        src++;
-                    }
-                    uint8_t srcLen = src[0];
-                    if (srcLen >= 2) {
-                        g_auth_pack_buf[0] = 2;
-                        memcpy(g_auth_pack_buf + 1, src + 1, 2);
-                        saveAuthToNVS();
-                        g_out.print(F("Zb: auth PACK set = "));
-                        for (uint8_t i = 0; i < 2; i++) {
-                            if (g_auth_pack_buf[1+i] < 0x10) g_out.print('0');
-                            g_out.print(g_auth_pack_buf[1+i], HEX);
-                        }
-                        g_out.println();
-                    }
-                }
-            } else if (message->attribute.id == ZB_ATTR_NFC_AUTH_ENABLED) {
-                if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL
-                    && message->attribute.data.value != nullptr) {
-                    g_auth_enabled = *(const bool *)message->attribute.data.value;
-                    saveAuthToNVS();
-                    g_out.printf("Zb: auth %s\n", g_auth_enabled ? "ENABLED" : "DISABLED");
                 }
             } else if (message->attribute.id == ZB_ATTR_NFC_BUZZER_TRIGGER) {
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL
@@ -706,69 +491,6 @@ static bool waitForTag(uint8_t *uid, uint8_t *uidLen, uint16_t toMs) {
     return nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uidLen, toMs);
 }
 
-// ── NTAG PWD_AUTH ────────────────────────────────────────────────────
-// Sends password to a selected NTAG tag and checks the PACK response.
-// Returns true if PACK matches the expected value.
-static bool ntagPasswordAuth(const uint8_t *uid, uint8_t uidLen,
-                             const uint8_t *pwd4, const uint8_t *expectedPack2) {
-    (void)uid; (void)uidLen;
-    uint8_t cmd[] = {NTAG_CMD_PWD_AUTH, pwd4[0], pwd4[1], pwd4[2], pwd4[3]};
-    uint8_t resp[2] = {0};
-    uint8_t respLen = 2;
-    if (!nfc.inDataExchange(cmd, sizeof(cmd), resp, &respLen)) {
-        g_out.println(F("PWD_AUTH: exchange failed"));
-        return false;
-    }
-    if (respLen != 2) {
-        g_out.printf("PWD_AUTH: unexpected resp len %d\n", respLen);
-        return false;
-    }
-    // Verify PACK (LSB first from tag)
-    if (resp[0] != expectedPack2[0] || resp[1] != expectedPack2[1]) {
-        g_out.printf("PWD_AUTH: PACK mismatch (got %02X%02X, expected %02X%02X)\n",
-                      resp[0], resp[1], expectedPack2[0], expectedPack2[1]);
-        return false;
-    }
-    g_out.println(F("PWD_AUTH: OK"));
-    return true;
-}
-
-// ── Configure tag with password ───────────────────────────────────────
-// Writes PWD, PACK, and sets AUTH0=4 so pages 4+ require authentication.
-// Must be called while tag is selected and BEFORE AUTH0 takes effect.
-static bool ntagConfigureAuth(const uint8_t *uid, uint8_t uidLen,
-                              const uint8_t *pwd4, const uint8_t *pack2) {
-    (void)uid; (void)uidLen;
-    // Write PWD to page 133 (LSB first per NTAG spec)
-    uint8_t pwdPage[4] = {pwd4[0], pwd4[1], pwd4[2], pwd4[3]};
-    if (!nfc.ntag2xx_WritePage(NTAG_PAGE_CFG_PWD, pwdPage)) {
-        g_out.println(F("cfg: write PWD failed"));
-        return false;
-    }
-    delayMicroseconds(2000);
-    // Write PACK to page 134 (first 2 bytes, RFUI zeroed)
-    uint8_t packPage[4] = {pack2[0], pack2[1], 0x00, 0x00};
-    if (!nfc.ntag2xx_WritePage(NTAG_PAGE_CFG_PACK, packPage)) {
-        g_out.println(F("cfg: write PACK failed"));
-        return false;
-    }
-    delayMicroseconds(2000);
-    // Read page 131, modify AUTH0 byte, write back
-    uint8_t cfgPage[4] = {0};
-    if (!nfc.ntag2xx_ReadPage(NTAG_PAGE_CFG_AUTH0, cfgPage)) {
-        g_out.println(F("cfg: read AUTH0 page failed"));
-        return false;
-    }
-    delayMicroseconds(2000);
-    cfgPage[2] = 0x04;  // AUTH0 = page 4 (protect NDEF data and above)
-    if (!nfc.ntag2xx_WritePage(NTAG_PAGE_CFG_AUTH0, cfgPage)) {
-        g_out.println(F("cfg: write AUTH0 failed"));
-        return false;
-    }
-    g_out.println(F("Tag auth configured: PWD+PACK set, AUTH0=4"));
-    return true;
-}
-
 static void printUID(const uint8_t *uid, uint8_t uidLen) {
     g_out.print(F("UID: "));
     for (uint8_t i = 0; i < uidLen; i++) {
@@ -809,24 +531,8 @@ static bool readTagText(const uint8_t *uid, uint8_t uidLen,
                         char *out, size_t outSize) {
     uint8_t raw[NFC_READ_BUF_SIZE] = {0};
 
-    // Try unauth first — most tags are unprotected.
     if (readTagData(uid, uidLen, 4, raw, sizeof(raw)))
         return parseTextNDEF(raw, sizeof(raw), out, outSize);
-
-    // Read failed.  If the tag is protected, try PWD_AUTH and retry.
-    if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
-        if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
-            g_out.println(F("Auth failed — tag not trusted"));
-            nfcEp.setLastAuthFailTs(getCurrentUtc());
-            nfcEp.reportLastAuthFailTs();
-            beep(100, 440); 
-            return false;
-        }
-        // Auth succeeded — retry the read
-        memset(raw, 0, sizeof(raw));
-        if (readTagData(uid, uidLen, 4, raw, sizeof(raw)))
-            return parseTextNDEF(raw, sizeof(raw), out, outSize);
-    }
 
     return false;
 }
@@ -837,30 +543,8 @@ static bool writeTagText(const uint8_t *uid, uint8_t uidLen,
     size_t nLen = buildTextNDEF(text, ndef, sizeof(ndef));
     if (!nLen) return false;
 
-    // Try unauth first — most tags are unprotected.
-    bool ok = writeTagData(uid, uidLen, 4, ndef, nLen);
-
-    // If that failed and the tag may be protected, authenticate and retry.
-    if (!ok && g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
-        if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
-            g_out.println(F("Auth failed — cannot write to protected tag"));
-            nfcEp.setLastAuthFailTs(getCurrentUtc());
-            nfcEp.reportLastAuthFailTs();
-            beep(100, 440);
-            return false;
-        }
-        ok = writeTagData(uid, uidLen, 4, ndef, nLen);
-    }
-
-    if (!ok) return false;
-
-    // Write succeeded.  If auth is enabled, ensure the tag is configured
-    // with PWD/PACK/AUTH0 so subsequent writes require authentication.
-    if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
-        if (!ntagConfigureAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
-            g_out.println(F("Warning: auth config failed — tag data was written"));
-        }
-    }
+    if (!writeTagData(uid, uidLen, 4, ndef, nLen))
+        return false;
 
     // Timestamp the write
     nfcEp.setLastWriteTs(getCurrentUtc());
@@ -927,17 +611,6 @@ static void console_dump() {
     nfcEp.setLastSeenTs(getCurrentUtc());
     nfcEp.reportLastSeenTs();
 
-    // Authenticate if required (pages 4+ are protected when auth enabled)
-    if (g_auth_enabled && g_auth_pwd_buf[0] == 4 && g_auth_pack_buf[0] == 2) {
-        if (!ntagPasswordAuth(uid, uidLen, g_auth_pwd_buf + 1, g_auth_pack_buf + 1)) {
-            g_out.println(F("Auth failed — cannot dump protected pages"));
-            nfcEp.setLastAuthFailTs(getCurrentUtc());
-            nfcEp.reportLastAuthFailTs();
-            beep(500, 1200);  // long low beep: auth rejection
-            return;
-        }
-    }
-
     // Read pages 3-10 (page 3=OTP, pages 4+ = user data)
     uint8_t raw[8 * 4] = {0};
     if (!readTagData(uid, uidLen, 3, raw, sizeof(raw))) {
@@ -993,21 +666,6 @@ static void console_status() {
     } else {
         g_out.println(F("(none)"));
     }
-    g_out.print(F("  Auth: "));
-    g_out.print(g_auth_enabled ? F("ENABLED  pwd=") : F("DISABLED  pwd="));
-    if (g_auth_pwd_buf[0] == 4) {
-        for (uint8_t i = 0; i < 4; i++) {
-            if (g_auth_pwd_buf[1+i] < 0x10) g_out.print('0');
-            g_out.print(g_auth_pwd_buf[1+i], HEX);
-        }
-    } else { g_out.print(F("(none)")); }
-    g_out.print(F("  pack="));
-    if (g_auth_pack_buf[0] == 2) {
-        for (uint8_t i = 0; i < 2; i++) {
-            if (g_auth_pack_buf[1+i] < 0x10) g_out.print('0');
-            g_out.print(g_auth_pack_buf[1+i], HEX);
-        }
-    } else { g_out.print(F("(none)")); }
     g_out.println();
 }
 
@@ -1145,13 +803,6 @@ void setup() {
     nfcEp.setReaderPresent(g_nfc_reader_present);
     nfcEp.reportReaderPresent();
 
-    loadAuthFromNVS();
-
-    if (g_auth_enabled) {
-        nfcEp.reportAuthPwd();
-        nfcEp.reportAuthPack();
-    }
-    nfcEp.reportAuthEnabled();
     g_out.println(F("Ready.\n"));
     beep(50);
 }
