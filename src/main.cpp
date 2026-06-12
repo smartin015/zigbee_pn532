@@ -32,13 +32,6 @@
  *   D4  (GPIO4)   →  SDA
  *   D5  (GPIO5)   →  SCL
  *
- * ── Serial console ────────────────────────────────────────────────────
- *   r  read & report tag once
- *   w  prompt for text, write to next tag
- *   c  toggle continuous read mode (on by default)
- *   s  show Zigbee & PN532 status
- *   f  factory‑reset Zigbee & rejoin
- *   ?  help
  */
 
 #include <Arduino.h>
@@ -90,12 +83,6 @@ extern "C" {
 #define NDEF_TNF_WELL_KNOWN    0x01
 #define NDEF_MAX_PAYLOAD       128
 #define NFC_READ_BUF_SIZE      160   // pages 4..43 — covers full ZB_TEXT_MAX_LEN NDEF
-
-// ── Keep-awake timer ──────────────────────────────────────────────────
-// Prevents tickless idle from stretching delay() to the Zigbee long poll
-// interval (~1000ms) when USB serial is disconnected.
-static esp_timer_handle_t g_keep_awake_timer = nullptr;
-static void keep_awake_cb(void *arg) { /* no-op — just keeps the CPU awake */ }
 
 // ── Globals (Zigbee string format: first byte = length) ────────────────
 Adafruit_PN532  nfc(PN532_SDA, PN532_SCL);
@@ -923,73 +910,6 @@ static void updateNfcState(const uint8_t *uid, uint8_t uidLen,
 //  Serial console commands
 // ==========================================================================
 
-static void console_read() {
-    if (!g_nfc_reader_present) {
-        g_out.println(F("PN532 not present — cannot read."));
-        return;
-    }
-    g_out.println(F("Bring a tag close…"));
-    uint8_t uid[7], uidLen;
-    if (!waitForTag(uid, &uidLen, 5000)) {
-        g_out.println(F("Timeout."));
-        return;
-    }
-    printUID(uid, uidLen);
-    nfcEp.setLastSeenTs(getCurrentUtc());
-    nfcEp.reportLastSeenTs();
-    beep(80);   // presence
-
-    char text[ZB_TEXT_MAX_LEN + 1] = "";
-    if (readTagText(uid, uidLen, text, sizeof(text))) {
-        g_out.print(F("Text: ")); g_out.println(text);
-        updateNfcState(uid, uidLen, text);
-        beep(80);   // read success
-    } else {
-        g_out.println(F("No NDEF text record."));
-    }
-}
-
-static void console_write() {
-    if (!g_nfc_reader_present) {
-        g_out.println(F("PN532 not present — cannot write."));
-        return;
-    }
-    g_out.println(F("Enter text (end with newline):"));
-    String in;
-    uint32_t dl = millis() + 30000;
-    while (millis() < dl) {
-        if (Serial.available()) { in = Serial.readStringUntil('\n'); in.trim(); break; }
-        delay(10);
-    }
-    if (!in.length()) { g_out.println(F("Cancelled.")); return; }
-
-    g_out.print(F("Will write: ")); g_out.println(in);
-    g_out.println(F("Bring a tag…"));
-
-    uint8_t uid[7], uidLen;
-    if (!waitForTag(uid, &uidLen, 10000)) {
-        g_out.println(F("Timeout.")); return;
-    }
-    printUID(uid, uidLen);
-    nfcEp.setLastSeenTs(getCurrentUtc());
-    nfcEp.reportLastSeenTs();
-
-    if (writeTagText(uid, uidLen, in.c_str())) {
-        g_out.println(F("✓ Written."));
-        g_has_pending_write = false;
-        g_pending_write_buf[0] = 0;
-        g_pending_write_buf[1] = '\0';
-        nfcEp.setPendingWrite("");
-    } else {
-        g_out.println(F("✗ Write failed."));
-    }
-}
-
-static void console_scan_toggle() {
-    g_continuous_read = !g_continuous_read;
-    g_out.printf("Continuous read: %s\n", g_continuous_read ? "ON" : "OFF");
-}
-
 // Dump raw tag memory for debugging
 static void console_dump() {
     if (!g_nfc_reader_present) {
@@ -1037,54 +957,11 @@ static void console_dump() {
     }
 }
 
-static void console_auth() {
-    g_out.println(F("Enter PWD (8 hex chars) then PACK (4 hex chars):"));
-    Serial.setTimeout(15000);
-    String pwdStr = Serial.readStringUntil('\n');
-    pwdStr.trim();
-    pwdStr.replace(" ", "");
-    String packStr = Serial.readStringUntil('\n');
-    packStr.trim();
-    packStr.replace(" ", "");
-    if (pwdStr.length() != 8 || packStr.length() != 4) {
-        g_out.println(F("Invalid — need 8 hex PWD + 4 hex PACK"));
-        return;
-    }
-    uint8_t pwd[4], pack[2];
-    for (uint8_t i = 0; i < 4; i++) {
-        char b[3] = {pwdStr[i*2], pwdStr[i*2+1], 0};
-        pwd[i] = (uint8_t)strtoul(b, nullptr, 16);
-    }
-    for (uint8_t i = 0; i < 2; i++) {
-        char b[3] = {packStr[i*2], packStr[i*2+1], 0};
-        pack[i] = (uint8_t)strtoul(b, nullptr, 16);
-    }
-    nfcEp.setAuthPwd(pwd);
-    nfcEp.setAuthPack(pack);
-    nfcEp.setAuthEnabled(true);
-    g_out.print(F("Auth set — PWD="));
-    for (uint8_t i = 0; i < 4; i++) {
-        if (pwd[i] < 0x10) g_out.print('0');
-        g_out.print(pwd[i], HEX);
-    }
-    g_out.print(F(" PACK="));
-    for (uint8_t i = 0; i < 2; i++) {
-        if (pack[i] < 0x10) g_out.print('0');
-        g_out.print(pack[i], HEX);
-    }
-    g_out.println(F(" ENABLED"));
-}
-
 static void console_help() {
     g_out.println(F("\nCommands:"));
-    g_out.println(F("  r — read & report tag once"));
-    g_out.println(F("  w — prompt for text, write to next tag"));
-    g_out.println(F("  c — toggle continuous read mode (on by default)"));
     g_out.println(F("  s — show Zigbee & PN532 status"));
-    g_out.println(F("  a — set auth password + pack (8+4 hex chars)"));
     g_out.println(F("  f — factory‑reset Zigbee & rejoin"));
     g_out.println(F("  x — reboot the MCU"));
-    g_out.println(F("  d — raw tag memory dump (debug)"));
     g_out.println(F("  b — beep"));
     g_out.println(F("  ? — this help"));
     g_out.println();
@@ -1190,18 +1067,6 @@ void setup() {
     if (!Serial) g_out = g_null_out;
     g_out.println(F("\n=== Zigbee NFC Bridge — Xiao ESP32C6 + PN532 ==="));
 
-    // Keep-awake timer: fires every 5ms to prevent tickless idle from
-    // stretching delay() to ~1000ms (the Zigbee long poll interval).
-    // This keeps PN532 polling responsive when USB serial is detached.
-    {
-        esp_timer_create_args_t timer_args = {
-            .callback = keep_awake_cb,
-            .name = "keep_awake"
-        };
-        esp_timer_create(&timer_args, &g_keep_awake_timer);
-        esp_timer_start_periodic(g_keep_awake_timer, 5000);  // 5 ms
-    }
-
     pinMode(BUZZER_PIN, OUTPUT);
     pinMode(BUZZER_GND, OUTPUT);
     digitalWrite(BUZZER_GND, LOW);
@@ -1293,11 +1158,7 @@ void setup() {
         nfcEp.reportAuthPack();
     }
     nfcEp.reportAuthEnabled();
-
-    g_out.println(F("\nContinuous read is ON — tags will be scanned automatically."));
-    g_out.println(F("Commands:  r)ead  w)rite  c)toggle-continuous  s)tatus  f)actory-reset  ?)help"));
     g_out.println(F("Ready.\n"));
-
     beep(50);
 }
 
@@ -1397,13 +1258,8 @@ void loop() {
     // ── Serial commands ──
     if (Serial.available()) {
         switch ((char)Serial.read()) {
-            case 'r': while (Serial.available()) Serial.read(); console_read();   break;
-            case 'w': while (Serial.available()) Serial.read(); console_write();  break;
-            case 'c': while (Serial.available()) Serial.read(); console_scan_toggle(); break;
             case 's': while (Serial.available()) Serial.read(); console_status(); break;
             case '?': while (Serial.available()) Serial.read(); console_help();   break;
-            case 'd': while (Serial.available()) Serial.read(); console_dump();   break;
-            case 'a': while (Serial.available()) Serial.read(); console_auth();   break;
             case 'b': while (Serial.available()) Serial.read(); beep(80); g_out.println("beep");   break;
             case 'f':
                 while (Serial.available()) Serial.read();
