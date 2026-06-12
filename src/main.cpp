@@ -1097,22 +1097,8 @@ void setup() {
     nfcEp.setPowerSource(ZB_POWER_SOURCE_MAINS);
     Zigbee.addEndpoint(&nfcEp);
 
-    // One-shot NVRAM erase on role change (ED→ZR).  Without this the ZBOSS
-    // stack restores the cached End Device role from NVRAM on rejoin.
-    bool erase_nvs = false;
-    {
-        Preferences p;
-        p.begin("zb_migrate", false);
-        uint32_t version = p.getUInt("cfg_ver", 0);
-        if (version < 1) {  // bump this number on future role/config changes
-            erase_nvs = true;
-            g_out.println(F("Migrating NVRAM (ED→ZR)…"));
-        }
-        p.end();
-    }
-
     g_out.println(F("Starting Zigbee (Router)…"));
-    if (!Zigbee.begin(ZIGBEE_ROUTER, erase_nvs)) {
+    if (!Zigbee.begin(ZIGBEE_ROUTER)) {
         g_out.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
     }
@@ -1131,22 +1117,8 @@ void setup() {
             delay(250);
         }
     }
-
-    // Persist migration version after successful join
-    {
-        Preferences p;
-        p.begin("zb_migrate", false);
-        p.putUInt("cfg_ver", 1);
-        p.end();
-    }
     g_out.println();
     g_out.println(F("Connected ✓"));
-
-    // Routers always have the receiver on when idle (rx_on_when_idle=true),
-    // which means APS ACKs and ZCL Default Responses are delivered directly
-    // without the poll-based indirect transmission used by End Devices.
-    // This call is redundant for routers but kept for clarity.
-    esp_zb_set_rx_on_when_idle(true);
 
     beep(30);
 
