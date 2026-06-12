@@ -1097,12 +1097,8 @@ void setup() {
     nfcEp.setPowerSource(ZB_POWER_SOURCE_MAINS);
     Zigbee.addEndpoint(&nfcEp);
 
-    // Keep long poll interval short (mains-powered, no need to conserve battery).
-    // This bounds per-poll latency for APS-ACK / ZCL-response retrieval.
-    esp_zb_set_default_long_poll_interval(100);
-
     g_out.println(F("Starting Zigbee (Router)…"));
-    if (!Zigbee.begin()) {
+    if (!Zigbee.begin(ZIGBEE_ROUTER)) {
         g_out.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
     }
