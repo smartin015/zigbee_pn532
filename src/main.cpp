@@ -1097,8 +1097,22 @@ void setup() {
     nfcEp.setPowerSource(ZB_POWER_SOURCE_MAINS);
     Zigbee.addEndpoint(&nfcEp);
 
+    // One-shot NVRAM erase on role change (ED→ZR).  Without this the ZBOSS
+    // stack restores the cached End Device role from NVRAM on rejoin.
+    bool erase_nvs = false;
+    {
+        Preferences p;
+        p.begin("zb_migrate", false);
+        uint32_t version = p.getUInt("cfg_ver", 0);
+        if (version < 1) {  // bump this number on future role/config changes
+            erase_nvs = true;
+            g_out.println(F("Migrating NVRAM (ED→ZR)…"));
+        }
+        p.end();
+    }
+
     g_out.println(F("Starting Zigbee (Router)…"));
-    if (!Zigbee.begin(ZIGBEE_ROUTER)) {
+    if (!Zigbee.begin(ZIGBEE_ROUTER, erase_nvs)) {
         g_out.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
     }
@@ -1116,6 +1130,14 @@ void setup() {
             g_out.print('.');
             delay(250);
         }
+    }
+
+    // Persist migration version after successful join
+    {
+        Preferences p;
+        p.begin("zb_migrate", false);
+        p.putUInt("cfg_ver", 1);
+        p.end();
     }
     g_out.println();
     g_out.println(F("Connected ✓"));
