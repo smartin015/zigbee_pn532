@@ -1098,43 +1098,8 @@ void setup() {
     nfcEp.addTimeCluster();
     nfcEp.setPowerSource(ZB_POWER_SOURCE_MAINS);
     Zigbee.addEndpoint(&nfcEp);
-
-    // ── ED→ZR migration: one-shot NVRAM erase + fresh IEEE address ──
-    // If the coordinator has previously seen this device as an End Device,
-    // it caches that role by IEEE address even after a full flash erase.
-    // Derive a new IEEE address from the factory MAC so the coordinator
-    // treats this as a new device and interviews it as a Router.
-    bool erase_nvs = false;
-    uint8_t ieee_addr[8];
-    esp_efuse_mac_get_default(ieee_addr);
-    {
-        Preferences p;
-        p.begin("zb_migrate", false);
-        uint32_t version = p.getUInt("cfg_ver", 0);
-        if (version < 1) {  // bump on future role/config changes
-            erase_nvs = true;
-            g_out.println(F("ED→ZR migration: erasing NVRAM + rotating IEEE addr…"));
-            // Flip MSB of the last byte — same derivation every boot
-            ieee_addr[7] ^= 0x80;
-            // Persist the derived address so subsequent boots reuse it
-            p.putBytes("ieee", ieee_addr, 8);
-        } else {
-            // Restore the derived address from previous migration
-            size_t len = p.getBytes("ieee", ieee_addr, 8);
-            if (len != 8) {
-                // Fallback: re-derive
-                ieee_addr[7] ^= 0x80;
-            }
-        }
-        p.end();
-    }
-    esp_ieee802154_set_extended_address(ieee_addr);
-    g_out.printf("IEEE addr: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
-                 ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
-                 ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
-
     g_out.println(F("Starting Zigbee (Router)…"));
-    if (!Zigbee.begin(ZIGBEE_ROUTER, erase_nvs)) {
+    if (!Zigbee.begin(ZIGBEE_ROUTER)) {
         g_out.println(F("Zigbee failed to start! Rebooting…"));
         ESP.restart();
     }
@@ -1156,18 +1121,9 @@ void setup() {
     g_out.println();
     g_out.println(F("Connected ✓"));
 
-    // Persist migration version after successful join
-    {
-        Preferences p;
-        p.begin("zb_migrate", false);
-        p.putUInt("cfg_ver", 1);
-        p.end();
-    }
-
     // Ensure rx_on_when_idle so APS ACKs and ZCL responses are
     // delivered directly (no poll-based indirect transmission).
     esp_zb_set_rx_on_when_idle(true);
-
     beep(30);
 
     g_out.print(F("Syncing time from coordinator… "));
