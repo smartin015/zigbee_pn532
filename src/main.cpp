@@ -804,7 +804,7 @@ void setup() {
     nfcEp.reportReaderPresent();
 
     g_out.println(F("Ready.\n"));
-    beep(50);
+    beep(50, 4800);
 }
 
 void loop() {
@@ -880,7 +880,9 @@ void loop() {
                         updateNfcState(uid, uidLen, text);
                         memcpy(lastGoodUID, uid, uidLen);
                         lastGoodUIDLen = uidLen;
-                        beep(80);   // successful text read beep
+                        beep(80, 2000);
+                        delay(80);
+                        beep(80, 2400);   // successful text read beep
                     } else {
                         // No NDEF text yet — report UID anyway, then retry
                         g_out.println(F("  (no NDEF text — will retry)"));
